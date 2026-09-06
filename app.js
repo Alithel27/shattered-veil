@@ -72,22 +72,32 @@ const XP_FOR_LEVEL = lvl => Math.floor(100 * Math.pow(lvl, 1.6));
 const AI_ENDPOINT = 'https://text.pollinations.ai/';
 
 async function askChronicler(systemPrompt, userPrompt) {
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt }
+  ];
+  // 1) Puter.js — free, keyless, works from the browser
+  if (window.puter?.ai?.chat) {
+    try {
+      const resp = await puter.ai.chat(messages, { model: 'gpt-4o-mini' });
+      const text = (resp?.message?.content ??
+        (typeof resp?.toString === 'function' ? resp.toString() : '') ?? '').trim();
+      if (text && text.length > 20) return text;
+    } catch (e) { /* fall through */ }
+  }
+  // 2) Pollinations (deprecated, often 402 — kept as backup)
   try {
     const res = await fetch(AI_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        model: 'openai'
-      })
+      body: JSON.stringify({ messages, model: 'openai' })
     });
-    if (!res.ok) return null;
-    const text = (await res.text()).trim();
-    return text && text.length > 20 ? text : null;
-  } catch { return null; }
+    if (res.ok) {
+      const text = (await res.text()).trim();
+      if (text && !text.startsWith('{"error"') && text.length > 20) return text;
+    }
+  } catch { /* fall through */ }
+  return null;
 }
 
 function chronicleContext() {
@@ -358,6 +368,7 @@ function storyHTML() {
   const story = getStory().slice().reverse();
   const user = currentUser();
   const isAdmin = user.role === 'goddess';
+  const c = myChar();
 
   return `
   <div class="story-layout">
