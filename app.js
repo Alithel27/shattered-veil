@@ -65,6 +65,69 @@ const STAT_DESC = {
 };
 const XP_FOR_LEVEL = lvl => Math.floor(100 * Math.pow(lvl, 1.6));
 
+/* ------------------- AI Chronicler ------------------- */
+/* Free, keyless text API (Pollinations). Falls back to local
+   templated narration if the network or API is unavailable. */
+
+const AI_ENDPOINT = 'https://text.pollinations.ai/';
+
+async function askChronicler(systemPrompt, userPrompt) {
+  try {
+    const res = await fetch(AI_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        model: 'openai'
+      })
+    });
+    if (!res.ok) return null;
+    const text = (await res.text()).trim();
+    return text && text.length > 20 ? text : null;
+  } catch { return null; }
+}
+
+function chronicleContext() {
+  const recent = getStory().slice(-6).map(e =>
+    `${e.type === 'goddess' ? 'GODDESS' : e.type === 'system' ? 'FATE' : e.author}: ${e.text.slice(0, 300)}`
+  ).join('\n');
+  return recent || '(The chronicle is blank.)';
+}
+
+function charContext(c) {
+  if (!c) return '';
+  return `Name: ${c.name}. Level ${c.level} ${RACES[c.race].evo[c.raceTier]} ${c.cls}. ` +
+    `Stats (STR/DEX/INT/VIT/LUK): ${c.stats.str}/${c.stats.dex}/${c.stats.int}/${c.stats.vit}/${c.stats.luk}. ` +
+    `HP ${c.hp}/${charMaxHp(c)}, MP ${c.mp}/${charMaxMp(c)}, ${c.gold} gold. ` +
+    `Skills: ${c.skills.map(s => SKILLS[s].name).join(', ')}. ` +
+    `Blessings: ${c.blessings.length}. Curses: ${c.curses.length}. ` +
+    `Equipment: ${Object.values(c.equipment).filter(Boolean).join(', ') || 'none'}.`;
+}
+
+const CHRONICLER_SYSTEM =
+  'You are the Chronicler of the Shattered Veil, an omniscient narrator of a dark fantasy world. ' +
+  'Write in second person for the player character, gothic and atmospheric, 2-4 sentences. ' +
+  'React to what just happened: let the world push back, offer hooks, danger, mystery or consequence. ' +
+  'Reference the character\'s traits, injuries, blessings or curses when relevant. ' +
+  'Never break character. No headers, no lists, no meta-commentary. Plain prose only.';
+
+function localConsequence(c, action) {
+  const hooks = [
+    'the torches gutter and something unseen observes from the dark',
+    'a raven with eyes like wet ink lands nearby and speaks one word before dying',
+    'the ground remembers an older name than the one men use here',
+    'a bell tolls somewhere below the earth',
+    'shadows lean closer, eager to see what you will do next',
+    'the air tastes of iron and rain that has not yet fallen'
+  ];
+  const hook = hooks[Math.floor(Math.random() * hooks.length)];
+  const wound = c && c.hp < charMaxHp(c) * 0.5 ? ' Your wounds throb in time with something distant.' : '';
+  return `You act, and the Veil shifts around your choice: ${hook}.${wound} The story does not end here — it sharpens.`;
+}
+
 /* ------------------- State ------------------- */
 
 let session = DB.get('session', null);   // username
@@ -173,6 +236,7 @@ function renderAuth(mode = 'login') {
 
 function renderCreateChar() {
   view = 'create';
+  const isG = currentUser()?.role === 'goddess';
   const raceOpts = Object.keys(RACES).map(r => `
     <option value="${r}">${r} — ${RACES[r].desc}</option>`).join('');
   const classOpts = Object.keys(CLASSES).map(c => `
@@ -180,15 +244,19 @@ function renderCreateChar() {
 
   $('#app').innerHTML = `
   <div class="auth-wrap"><div class="auth-box" style="max-width:560px">
-    <h1>FORGE YOUR SOUL</h1>
-    <div class="auth-sub">Who steps into the Shattered Veil?</div>
+    <h1>${isG ? 'FORGE A MORTAL INCARNATION' : 'FORGE YOUR SOUL'}</h1>
+    <div class="auth-sub">${isG ? 'A vessel of flesh and longing to walk among your subjects — it will live, fight, level and die like any mortal.' : 'Who steps into the Shattered Veil?'}</div>
     <div class="error-msg" id="ccErr"></div>
     <div class="field"><label>Character Name</label><input id="ccName" maxlength="30" autocomplete="off"></div>
     <div class="field"><label>Race</label><select id="ccRace">${raceOpts}</select></div>
     <div class="field"><label>Class</label><select id="ccClass">${classOpts}</select></div>
     <div class="hint" id="ccPreview" style="margin-bottom:18px"></div>
-    <button class="btn btn-block" id="ccGo">Begin the Chronicle</button>
+    <button class="btn btn-block" id="ccGo">${isG ? 'Send the Incarnation' : 'Begin the Chronicle'}</button>
+    ${isG ? '<button class="btn btn-dark btn-block" id="ccSkip" style="margin-top:10px">Remain Formless (no incarnation)</button>' : ''}
   </div></div>`;
+
+  const skip = $('#ccSkip');
+  if (skip) skip.onclick = () => { view = 'story'; renderGame(); };
 
   const preview = () => {
     const r = RACES[$('#ccRace').value], c = CLASSES[$('#ccClass').value];
@@ -238,8 +306,9 @@ function renderGame() {
   if (!user) return renderAuth();
   const c = myChar();
   if (!c && user.role !== 'goddess') return renderCreateChar();
-
   const isAdmin = user.role === 'goddess';
+  if (!c && isAdmin && view !== 'story') view = 'story';
+
   const tabs = [
     ['story', 'Chronicle'], ['players', 'Souls'], ['character', 'Character'],
     ['skills', 'Skills & Evolution'], ['inventory', 'Inventory']
@@ -295,10 +364,31 @@ function storyHTML() {
     <div>
       <div class="panel composer">
         <div class="panel-title">${isAdmin ? 'Shape the World' : 'Write Your Action'}</div>
+        ${isAdmin ? `
+          ${c ? `
+          <div class="field"><label>Speak As</label>
+            <select id="voiceSel">
+              <option value="goddess">☽ The Goddess — divine world event</option>
+              <option value="mortal">⚔ ${esc(c.name)} — your mortal incarnation acts</option>
+            </select>
+          </div>` : `
+          <div style="margin-bottom:14px;padding:12px;border:1px dashed var(--purple-dim);font-size:14px;color:var(--text-dim)">
+            You are formless. <a id="forgeIncLink" style="color:var(--purple);cursor:pointer;text-decoration:underline">Forge a mortal incarnation</a>
+            to walk, fight and level among your subjects — while keeping your divine powers.
+          </div>`}
+        ` : ''}
         <div class="field"><textarea id="storyText" placeholder="${isAdmin
           ? 'Describe a world event, omen, calamity, or divine appearance...'
           : 'What does your character do? The story bends to your words...'}"></textarea></div>
-        <button class="btn ${isAdmin ? 'btn-purple' : ''}" id="storyPost">${isAdmin ? 'Unleash Upon the World' : 'Act'}</button>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;cursor:pointer;font-size:15px;color:var(--text-dim)">
+          <input type="checkbox" id="aiNarrate" checked style="accent-color:var(--purple);width:16px;height:16px">
+          ✦ Let the Chronicler narrate the world's response (AI)
+        </label>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn ${isAdmin ? 'btn-purple' : ''}" id="storyPost">${isAdmin ? 'Unleash Upon the World' : 'Act'}</button>
+          ${(!isAdmin || c) ? '<button class="btn btn-dark" id="omenBtn" title="The Chronicler speaks of things to come">✦ Seek an Omen</button>' : ''}
+        </div>
+        <div id="aiStatus" style="margin-top:10px;font-size:14px;color:var(--purple);font-style:italic;min-height:18px"></div>
       </div>
       <div class="panel">
         <div class="panel-title">The Chronicle <span style="color:var(--text-dim);font-size:12px;letter-spacing:0">${story.length} entries</span></div>
@@ -342,32 +432,114 @@ function recentEventsHTML() {
 function wireStory() {
   const btn = $('#storyPost');
   if (!btn) return;
-  btn.onclick = () => {
+  stirIfQuiet();
+  const status = m => { const el = $('#aiStatus'); if (el) el.textContent = m; };
+
+  btn.onclick = async () => {
     const text = $('#storyText').value.trim();
     if (!text) return;
+    const useAI = $('#aiNarrate')?.checked;
     const user = currentUser();
     const isAdmin = user.role === 'goddess';
+    const c = myChar();
+    // The Goddess chooses her voice: divine decree, or her mortal incarnation.
+    const asGoddess = isAdmin && ($('#voiceSel')?.value ?? 'goddess') === 'goddess';
     const story = getStory();
     story.push({
       id: uid(),
-      type: isAdmin ? 'goddess' : 'player',
-      author: isAdmin ? 'The Goddess' : myChar().name,
+      type: asGoddess ? 'goddess' : 'player',
+      author: asGoddess ? 'The Goddess' : c.name,
       text, t: Date.now()
     });
     saveStory(story);
     $('#storyText').value = '';
+    btn.disabled = true;
 
-    // Players gain XP for acting; the Goddess earns nothing.
-    if (!isAdmin) {
+    // Mortal actions (a player's, or the Goddess acting through her incarnation) earn XP.
+    if (!asGoddess && c) {
       const chars = getChars();
-      const c = chars[session];
+      const ch = chars[session];
       const gain = 15 + Math.floor(Math.random() * 11);
-      grantXP(c, gain, `Your deeds are woven into the chronicle (+${gain} XP).`);
-      chars[session] = c;
+      grantXP(ch, gain, `Your deeds are woven into the chronicle (+${gain} XP).`);
+      chars[session] = ch;
       saveChars(chars);
     }
     renderGame();
+
+    if (useAI) {
+      status('✦ The Chronicler stirs, reading the threads of fate...');
+      const prompt = asGoddess
+        ? `The GODDESS has just shaped the world: "${text}"\n\n` +
+          `Recent chronicle:\n${chronicleContext()}\n\n` +
+          `Write 2-3 sentences as the world's reaction — omens, whispers, the land itself responding to divine will. Address mortals as "mortals" or "children". Plain prose.`
+        : `${charContext(c)}\n\nRecent chronicle:\n${chronicleContext()}\n\n` +
+          `The player just acted: "${text}"\n\nNarrate what happens next.`;
+      const system = asGoddess
+        ? CHRONICLER_SYSTEM + ' In this response you speak of how the WORLD reacts to the Goddess, not to a player.'
+        : CHRONICLER_SYSTEM;
+      const ai = await askChronicler(system, prompt);
+      const entry = {
+        id: uid(), type: 'system', author: 'The Chronicler',
+        text: ai || localConsequence(c, text),
+        t: Date.now()
+      };
+      saveStory([...getStory(), entry]);
+      renderGame();
+      if (!ai) toast('The Chronicler could not reach the far realms (AI offline) — a lesser fate was woven instead.', 'red');
+    }
   };
+
+  const omen = $('#omenBtn');
+  if (omen) omen.onclick = async () => {
+    const c = myChar();
+    omen.disabled = true;
+    status('✦ You close your eyes and listen to the dark between moments...');
+    const prompt = `${charContext(c)}\n\nRecent chronicle:\n${chronicleContext()}\n\n` +
+      `Write a short omen or vision the world shows this character: a warning, a hook, or a hint of what approaches. 2-3 sentences, second person. Plain prose.`;
+    const ai = await askChronicler(CHRONICLER_SYSTEM, prompt);
+    saveStory([...getStory(), {
+      id: uid(), type: 'system', author: 'The Chronicler',
+      text: ai || localConsequence(c, 'seeks an omen'),
+      t: Date.now()
+    }]);
+    renderGame();
+  };
+
+  const forge = $('#forgeIncLink');
+  if (forge) forge.onclick = () => renderCreateChar();
+}
+
+/* ------------------------------------------------------------
+   The Chronicler stirs: if the chronicle has gone quiet, the AI
+   writes a world event on its own the next time anyone watches.
+   Fires at most once every 30 minutes.
+   ------------------------------------------------------------ */
+const STIR_QUIET_MS = 6 * 60 * 60 * 1000;   // "quiet" = no new entries for 6 hours
+const STIR_COOLDOWN_MS = 30 * 60 * 1000;    // max one auto-event per 30 min
+
+async function stirIfQuiet() {
+  const story = getStory();
+  const lastT = story.length ? story[story.length - 1].t : 0;
+  const lastStir = DB.get('lastStir', 0);
+  const now = Date.now();
+  if (now - lastT < STIR_QUIET_MS) return;
+  if (now - lastStir < STIR_COOLDOWN_MS) return;
+  DB.set('lastStir', now);
+
+  const chars = Object.values(getChars());
+  const cast = chars.length
+    ? chars.map(c => `${c.name} (Lv ${c.level} ${RACES[c.race].evo[c.raceTier]} ${c.cls})`).join(', ')
+    : 'no named souls yet';
+  const prompt = `The world of the Shattered Veil has gone quiet. Living souls: ${cast}.\n\n` +
+    `Recent chronicle:\n${chronicleContext()}\n\n` +
+    `Write a world event that stirs the story again — a calamity, discovery, faction move or mystery that these characters could respond to. 2-3 sentences, ominous and inviting. Plain prose.`;
+  const ai = await askChronicler(CHRONICLER_SYSTEM, prompt);
+  saveStory([...getStory(), {
+    id: uid(), type: 'system', author: 'The Chronicler',
+    text: ai || 'The silence grows teeth. Far away, something ancient turns over in its sleep — and the world quietly changes while no one watches.',
+    t: Date.now()
+  }]);
+  if (view === 'story') renderGame();
 }
 
 function grantXP(c, amount, msg) {
@@ -406,7 +578,7 @@ function playersHTML() {
       <div class="player-row">
         <div>
           <div style="font-family:'Cinzel',serif;color:var(--text)">${esc(c.name)}</div>
-          <div style="font-size:13px;color:var(--text-dim)">Lv ${c.level} ${esc(RACES[c.race].evo[c.raceTier])} ${esc(c.cls)} · ${users[u]?.role === 'goddess' ? 'Divine Vessel' : 'Mortal'}</div>
+          <div style="font-size:13px;color:var(--text-dim)">Lv ${c.level} ${esc(RACES[c.race].evo[c.raceTier])} ${esc(c.cls)} · Wanderer of the Veil</div>
         </div>
         <div style="font-size:13px;color:var(--text-dim)">${c.gold} gold · ${c.skills.length} skills · ${c.inventory.length + Object.values(c.equipment).filter(Boolean).length} items</div>
       </div>`).join('')}
@@ -556,7 +728,7 @@ function wireSkills() {
     saveChars(chars);
     saveStory([...getStory(), {
       id: uid(), type: 'system', author: 'The Veil',
-      text: `The air shimmers. ${c.name} is reborn as ${race.evo[c.raceTier]}. The Goddess takes note of this ascension.`,
+      text: `The air shimmers. ${c.name} is reborn as ${race.evo[c.raceTier]}. The Veil itself takes note of this ascension.`,
       t: Date.now()
     }]);
     toast(`✦ You have evolved into ${race.evo[c.raceTier]}!`, 'purple');
@@ -743,6 +915,24 @@ function wireAdmin() {
         text: `${c.name} ${notes.join(', ')}.`,
         t: Date.now()
       }]);
+      // AI-tailored narration for blessings & curses — divine intervention deserves prose.
+      if (kind === 'blessing' || kind === 'curse') {
+        const divinePrompt = `${charContext(c)}\n\nRecent chronicle:\n${chronicleContext()}\n\n` +
+          `The Goddess ${kind === 'blessing' ? 'has BLESSED' : 'has CURSED'} ${c.name}. ` +
+          (kind === 'blessing'
+            ? 'Narrate the blessing manifesting: how it feels, what changes in their body and fate. Radiant but with weight — blessings from a dark goddess are never free of shadow. 2-3 sentences, second person. Plain prose.'
+            : 'Narrate the curse taking root: how it manifests, what it costs them, how the world itself seems to turn against them. Personal and chilling. 2-3 sentences, second person. Plain prose.');
+        askChronicler(CHRONICLER_SYSTEM, divinePrompt).then(ai => {
+          saveStory([...getStory(), {
+            id: uid(), type: 'system', author: 'The Chronicler',
+            text: ai || (kind === 'blessing'
+              ? `Light that should not exist settles into ${c.name}'s bones. Something has changed, and the world can smell it.`
+              : `A cold thread winds itself through ${c.name}'s shadow. Wherever they go now, misfortune arrives first.`),
+            t: Date.now()
+          }]);
+          if (view === 'story') renderGame();
+        });
+      }
     }
   };
 
