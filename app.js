@@ -71,27 +71,34 @@ const XP_FOR_LEVEL = lvl => Math.floor(100 * Math.pow(lvl, 1.6));
 
 const AI_ENDPOINT = 'https://text.pollinations.ai/';
 
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+  ]);
+}
+
 async function askChronicler(systemPrompt, userPrompt) {
   const messages = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt }
   ];
-  // 1) Puter.js — free, keyless, works from the browser
+  // 1) Puter.js — free, keyless. Hard 30s cap: a hung request must never freeze the chronicle.
   if (window.puter?.ai?.chat) {
     try {
-      const resp = await puter.ai.chat(messages, { model: 'gpt-4o-mini' });
+      const resp = await withTimeout(puter.ai.chat(messages), 30000);
       const text = (resp?.message?.content ??
         (typeof resp?.toString === 'function' ? resp.toString() : '') ?? '').trim();
-      if (text && text.length > 20) return text;
+      if (text && text.length > 20 && !text.startsWith('{')) return text;
     } catch (e) { /* fall through */ }
   }
-  // 2) Pollinations (deprecated, often 402 — kept as backup)
+  // 2) Pollinations (deprecated, often 402 — kept as backup, 12s cap)
   try {
-    const res = await fetch(AI_ENDPOINT, {
+    const res = await withTimeout(fetch(AI_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages, model: 'openai' })
-    });
+    }), 12000);
     if (res.ok) {
       const text = (await res.text()).trim();
       if (text && !text.startsWith('{"error"') && text.length > 20) return text;
@@ -478,7 +485,7 @@ function wireStory() {
     renderGame();
 
     if (useAI) {
-      status('✦ The Chronicler stirs, reading the threads of fate...');
+      toast('✦ The Chronicler is writing...', 'purple');
       const prompt = asGoddess
         ? `The GODDESS has just shaped the world: "${text}"\n\n` +
           `Recent chronicle:\n${chronicleContext()}\n\n` +
