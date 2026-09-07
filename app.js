@@ -69,6 +69,25 @@ const ITEM_POOL = {
   'Cursed Idol':      { type: 'trinket', desc: 'It watches back. +6 STR, but the Goddess frowns.', effect: { str: 6 } }
 };
 
+const ENEMIES = [
+  { name: 'Grave Hound',     hp: 42, atk: 8 },
+  { name: 'Hollow Wraith',   hp: 32, atk: 11 },
+  { name: 'Carrion Witch',   hp: 36, atk: 10 },
+  { name: 'Ash Ghoul',       hp: 52, atk: 7 },
+  { name: 'Veil Stalker',    hp: 46, atk: 12 },
+  { name: 'Chittering Brood', hp: 26, atk: 9 }
+];
+
+const RECIPES = [
+  { out: 'Elixir of the Veil',  desc: 'Distill draughts and moonlight into something greater', xp: 15, needs: { 'Healing Draught': 2, 'Mana Vial': 1 } },
+  { out: 'Runed Greatblade',    desc: 'Feed two rusted blades to the fire; one greatblade wakes', xp: 35, needs: { 'Rusty Sword': 2, 'gold': 40 } },
+  { out: 'Staff of Whispers',   desc: 'Bind a blade in whispering vials until it speaks',        xp: 35, needs: { 'Rusty Sword': 1, 'Mana Vial': 2, 'gold': 30 } },
+  { out: 'Shadowcloak',         desc: 'Dye cloth in draught and dusk',                           xp: 25, needs: { 'Healing Draught': 1, 'gold': 50 } },
+  { out: 'Bulwark Plate',       desc: 'Fold rusted steel over steel until it becomes a wall',    xp: 40, needs: { 'Rusty Sword': 2, 'gold': 60 } },
+  { out: 'Circlet of Stars',    desc: 'Set captured moonlight in a band of cold silver',         xp: 40, needs: { 'Mana Vial': 3, 'gold': 40 } },
+  { out: "Goddess' Sigil",      desc: 'An offering of elixir and gold, returned tenfold as favor', xp: 60, needs: { 'Elixir of the Veil': 1, 'gold': 100 } }
+];
+
 const STAT_NAMES = { str: 'Strength', dex: 'Dexterity', int: 'Intelligence', vit: 'Vitality', luk: 'Luck' };
 const STAT_DESC = {
   str: 'Physical power. Increases damage.',
@@ -179,6 +198,9 @@ function getStory() { return DB.get('story', []); }
 function saveStory(s) { DB.set('story', s); }
 function getCustomSkills() { return DB.get('customSkills', []); }
 function saveCustomSkills(s) { DB.set('customSkills', s); }
+function getMonsters() { return DB.get('monsters', []); }
+function saveMonsters(m) { DB.set('monsters', m); }
+function activeMonsters() { return getMonsters().filter(m => m.status === 'active'); }
 function customSkillByKey(key) { return getCustomSkills().find(s => 'custom:' + s.id === key); }
 function skillName(key) { return SKILLS[key]?.name || customSkillByKey(key)?.name || key; }
 
@@ -359,7 +381,7 @@ function renderGame() {
 
   const tabs = [
     ['story', 'Chronicle'], ['players', 'Souls'], ['character', 'Character'],
-    ['skills', 'Skills & Evolution'], ['inventory', 'Inventory']
+    ['skills', 'Skills & Evolution'], ['inventory', 'Inventory'], ['craft', 'Craft']
   ];
   if (isAdmin) tabs.push(['admin', '☽ Goddess Sanctum']);
 
@@ -388,6 +410,7 @@ function renderGame() {
   else if (view === 'character') root.innerHTML = characterHTML();
   else if (view === 'skills') root.innerHTML = skillsHTML();
   else if (view === 'inventory') root.innerHTML = inventoryHTML();
+  else if (view === 'craft') root.innerHTML = craftHTML();
   else if (view === 'admin' && isAdmin) root.innerHTML = adminHTML();
   else { view = 'story'; root.innerHTML = storyHTML(); }
 
@@ -395,6 +418,7 @@ function renderGame() {
   wireCharacter();
   wireSkills();
   wireInventory();
+  wireCraft();
   wireAdmin();
 }
 
@@ -411,6 +435,7 @@ function storyHTML() {
   return `
   <div class="story-layout">
     <div>
+      ${combatHTML(myChar())}
       <div class="panel composer">
         <div class="panel-title">${isAdmin ? 'Shape the World' : 'Write Your Action'}</div>
         ${isAdmin ? `
@@ -436,6 +461,7 @@ function storyHTML() {
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn ${isAdmin ? 'btn-purple' : ''}" id="storyPost">${isAdmin ? 'Unleash Upon the World' : 'Act'}</button>
           ${(!isAdmin || c) ? '<button class="btn btn-dark" id="omenBtn" title="The Chronicler speaks of things to come">✦ Seek an Omen</button>' : ''}
+          ${(!isAdmin || c) ? '<button class="btn btn-dark" id="huntBtn" title="Hunt the dark for XP and gold">⚔ Hunt</button>' : ''}
         </div>
         <div id="aiStatus" style="margin-top:10px;font-size:14px;color:var(--purple);font-style:italic;min-height:18px"></div>
       </div>
@@ -458,13 +484,37 @@ function storyHTML() {
       <div class="panel">
         <div class="panel-title">How It Works</div>
         <p style="font-size:15px;line-height:1.6;color:var(--text-dim)">
-          Every action you narrate earns <span style="color:var(--gold)">XP</span> and is woven into the living
-          chronicle. The <span style="color:var(--purple)">Goddess</span> watches all — she may bless you with
-          gifts, gold and power... or curse you with misfortune. Spend stat points when you level,
-          unlock skills, and evolve your race into something divine — or monstrous.
+          Words move the story, but only deeds make you stronger. <span style="color:var(--gold)">XP</span> comes
+          from three sources alone: <span style="color:var(--gold)">⚔ Hunting</span> the dark things of the world,
+          <span style="color:var(--gold)">⚒ Crafting</span> at the fire, and the
+          <span style="color:var(--purple)">Goddess'</span> own gifts. The Goddess watches all — she may bless you
+          with power, or curse you with misfortune. Spend stat points when you level, unlock skills, and evolve
+          your race into something divine — or monstrous.
         </p>
       </div>
       ${myChar() ? recentEventsHTML() : ''}
+    </div>
+  </div>`;
+}
+
+function combatHTML(c) {
+  if (!c?.combat) return '';
+  const e = c.combat;
+  return `
+  <div class="panel" style="border-color:var(--blood);box-shadow:0 0 24px rgba(164,31,43,0.15)">
+    <div class="panel-title" style="color:var(--bad)">⚔ ${esc(e.name)} <span style="font-size:12px;color:var(--text-dim)">round ${e.round}</span></div>
+    <div class="bars">
+      <div class="bar-row"><span class="bar-label">FOE</span>
+        <div class="bar-track"><div class="bar-fill hp" style="width:${Math.max(0, e.hp / e.maxHp * 100)}%"></div></div>
+        <span class="bar-val">${e.hp} / ${e.maxHp}</span></div>
+      <div class="bar-row"><span class="bar-label">YOU</span>
+        <div class="bar-track"><div class="bar-fill hp" style="width:${Math.max(0, c.hp / charMaxHp(c) * 100)}%"></div></div>
+        <span class="bar-val">${c.hp} / ${charMaxHp(c)}</span></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-danger btn-sm" data-cact="attack">Strike</button>
+      ${c.skills.length ? '<button class="btn btn-purple btn-sm" data-cact="skill">Use Skill (2× dmg)</button>' : ''}
+      <button class="btn btn-dark btn-sm" data-cact="flee">Flee</button>
     </div>
   </div>`;
 }
@@ -478,10 +528,62 @@ function recentEventsHTML() {
   return `<div class="panel"><div class="panel-title purple">Marks Upon Your Soul</div>${notes.join('')}</div>`;
 }
 
+/* ------------------------------------------------------------
+   MONSTER AMBUSHES. A monster whose target is this user (or that
+   is indiscriminate) may attack when the Chronicle loads or when
+   the player hunts. Cooldown per monster per player: 10 minutes,
+   and never while the player is below quarter health.
+   ------------------------------------------------------------ */
+function startMonsterCombat(m) {
+  const chars = getChars();
+  const c = chars[session];
+  if (!c || c.combat) return;
+  c.combat = { name: m.name, hp: m.hp, maxHp: m.hp, atk: m.atk, round: 1, monsterId: m.id };
+  chars[session] = c;
+  saveChars(chars);
+  const monsters = getMonsters();
+  const rec = monsters.find(x => x.id === m.id);
+  if (rec) { rec.lastAttack = rec.lastAttack || {}; rec.lastAttack[session] = Date.now(); saveMonsters(monsters); }
+  saveStory([...getStory(), {
+    id: uid(), type: 'system', author: 'The Veil',
+    text: `${c.name} is set upon by ${m.name}!`,
+    t: Date.now()
+  }]);
+  toast(`☠ ${m.name} has come for you!`, 'red');
+  renderGame();
+  askChronicler(CHRONICLER_SYSTEM,
+    `${charContext(c)}\n\nRecent chronicle:\n${chronicleContext()}\n\n` +
+    `${c.name} is ambushed by ${m.name} (${m.hp} HP, ${m.atk} ATK) — ${m.desc} ` +
+    `Write 2-3 sentences of the ambush: it emerges, the terrain, the terror of the moment. Second person. Plain prose.`
+  ).then(ai => {
+    saveStory([...getStory(), {
+      id: uid(), type: 'system', author: 'The Chronicler',
+      text: ai || `${m.name} comes out of the dark without sound.`,
+      t: Date.now()
+    }]);
+    if (view === 'story') renderGame();
+  });
+}
+
+function monsterAmbushCheck() {
+  const c = myChar();
+  if (!c || c.combat) return;
+  if (c.hp < charMaxHp(c) * 0.25) return; // no kicking souls while they're down
+  const now = Date.now();
+  const hunters = activeMonsters().filter(m => {
+    if (m.target && m.target !== session) return false;
+    const last = (m.lastAttack || {})[session] || 0;
+    return now - last > 10 * 60 * 1000;
+  });
+  if (!hunters.length) return;
+  if (Math.random() < 0.45) startMonsterCombat(hunters[Math.floor(Math.random() * hunters.length)]);
+}
+
 function wireStory() {
   const btn = $('#storyPost');
   if (!btn) return;
   stirIfQuiet();
+  monsterAmbushCheck();
   const status = m => { const el = $('#aiStatus'); if (el) el.textContent = m; };
 
   btn.onclick = async () => {
@@ -504,15 +606,6 @@ function wireStory() {
     $('#storyText').value = '';
     btn.disabled = true;
 
-    // Mortal actions (a player's, or the Goddess acting through her incarnation) earn XP.
-    if (!asGoddess && c) {
-      const chars = getChars();
-      const ch = chars[session];
-      const gain = 15 + Math.floor(Math.random() * 11);
-      grantXP(ch, gain, `Your deeds are woven into the chronicle (+${gain} XP).`);
-      chars[session] = ch;
-      saveChars(chars);
-    }
     renderGame();
 
     if (useAI) {
@@ -557,6 +650,161 @@ function wireStory() {
 
   const forge = $('#forgeIncLink');
   if (forge) forge.onclick = () => renderCreateChar();
+
+  // ---- Hunt: trigger a combat encounter ----
+  const hunt = $('#huntBtn');
+  if (hunt) hunt.onclick = async () => {
+    const chars = getChars();
+    const c = chars[session];
+    if (!c || c.combat) return;
+    // A horror already stalking this soul may strike when they go hunting.
+    const stalker = activeMonsters().find(m => {
+      if (m.target && m.target !== session) return false;
+      const last = (m.lastAttack || {})[session] || 0;
+      return Date.now() - last > 10 * 60 * 1000;
+    });
+    if (stalker && Math.random() < 0.5) { startMonsterCombat(stalker); return; }
+    const t = ENEMIES[Math.floor(Math.random() * ENEMIES.length)];
+    const mult = 1 + (c.level - 1) * 0.18;
+    c.combat = { name: t.name, hp: Math.round(t.hp * mult), maxHp: Math.round(t.hp * mult), atk: Math.round(t.atk * mult), round: 1 };
+    chars[session] = c;
+    saveChars(chars);
+    saveStory([...getStory(), {
+      id: uid(), type: 'system', author: 'The Veil',
+      text: `${c.name} goes hunting in the dark places of the world...`,
+      t: Date.now()
+    }]);
+    renderGame();
+    toast('⚔ Something has found you first.', 'red');
+
+    const cAfter = myChar();
+    const intro = await askChronicler(CHRONICLER_SYSTEM,
+      `${charContext(cAfter)}\n\nRecent chronicle:\n${chronicleContext()}\n\n` +
+      `${cAfter.name} goes hunting and is set upon by a ${t.name} (${Math.round(t.hp * mult)} HP). ` +
+      `Write 2-3 sentences of the ambush — the foe emerging, the ground, the first heartbeat of danger. Second person. Plain prose.`);
+    saveStory([...getStory(), {
+      id: uid(), type: 'system', author: 'The Chronicler',
+      text: intro || `A ${t.name} bursts from the dark, all teeth and hunger.`,
+      t: Date.now()
+    }]);
+    if (view === 'story') renderGame();
+  };
+
+  // ---- Combat actions ----
+  document.querySelectorAll('[data-cact]').forEach(b => b.onclick = () => {
+    const chars = getChars();
+    const c = chars[session];
+    if (!c?.combat) return;
+    const cb = c.combat;
+    const es = effStats(c);
+    const act = b.dataset.cact;
+
+    const enemyTurn = () => {
+      const dmg = Math.max(1, Math.round(cb.atk + Math.random() * 6 - es.vit * 0.4));
+      c.hp = Math.max(0, c.hp - dmg);
+      cb.round++;
+      if (c.hp <= 0) {
+        const foe = cb.name;
+        c.hp = 1;
+        c.combat = null;
+        chars[session] = c;
+        saveChars(chars);
+        saveStory([...getStory(), {
+          id: uid(), type: 'system', author: 'The Veil',
+          text: `${c.name} falls to the ${foe} and is left broken in the dark. The Veil, for its own reasons, refuses to let the story end — they wake at a roadside shrine, alive and owing.`,
+          t: Date.now()
+        }]);
+        toast('☠ Defeat — you wake at a shrine, alive but having gained nothing.', 'red');
+        renderGame();
+        return true;
+      }
+      return false;
+    };
+
+    if (act === 'attack' || act === 'skill') {
+      let dmg = Math.max(1, Math.round(Math.max(es.str, es.int) * 1.2 + es.dex * 0.6 + c.level * 2 + Math.random() * 8));
+      if (act === 'skill') {
+        if (!c.skills.length) return;
+        dmg = Math.round(dmg * 2);
+      }
+      cb.hp -= dmg;
+      if (cb.hp <= 0) {
+        const foe = cb.name;
+        if (cb.monsterId) {
+          // A Goddess-forged horror slain — grant its set rewards.
+          const monsters = getMonsters();
+          const rec = monsters.find(x => x.id === cb.monsterId);
+          const xp = rec?.xp ?? 100;
+          const gold = rec?.gold ?? 50;
+          c.gold += gold;
+          let lootNote = '';
+          if (rec?.item) { c.inventory.push({ id: uid(), key: rec.item }); lootNote = `, and claims ${rec.item} from the carcass`; }
+          if (rec) { rec.status = 'defeated'; rec.slainBy = c.name; saveMonsters(monsters); }
+          c.combat = null;
+          grantXP(c, xp);
+          chars[session] = c;
+          saveChars(chars);
+          saveStory([...getStory(), {
+            id: uid(), type: 'system', author: 'The Veil',
+            text: `${c.name} has SLAIN ${foe}! (+${xp} XP, +${gold} gold${lootNote}) The world breathes a little easier.`,
+            t: Date.now()
+          }]);
+          toast(`⚔ ${foe} is slain! +${xp} XP, +${gold} gold${lootNote}.`);
+          renderGame();
+          return;
+        }
+        const xp = 25 + c.level * 12 + Math.floor(Math.random() * 15);
+        const gold = 5 + Math.floor(Math.random() * 5 * c.level) + c.level * 2;
+        c.gold += gold;
+        let lootNote = '';
+        if (Math.random() * 100 < 15 + es.luk * 4) {
+          const loot = Math.random() < 0.5 ? 'Healing Draught' : 'Mana Vial';
+          c.inventory.push({ id: uid(), key: loot });
+          lootNote = `, and claims ${loot} from the corpse`;
+        }
+        c.combat = null;
+        grantXP(c, xp);
+        chars[session] = c;
+        saveChars(chars);
+        saveStory([...getStory(), {
+          id: uid(), type: 'system', author: 'The Veil',
+          text: `${c.name} slays the ${foe} (+${xp} XP, +${gold} gold${lootNote}).`,
+          t: Date.now()
+        }]);
+        toast(`⚔ Victory over the ${foe}! +${xp} XP, +${gold} gold${lootNote}.`);
+        renderGame();
+        return;
+      }
+      if (enemyTurn()) return;
+      chars[session] = c;
+      saveChars(chars);
+      renderGame();
+      return;
+    }
+
+    if (act === 'flee') {
+      const chance = Math.min(90, 40 + es.dex * 3 + es.luk * 2);
+      if (Math.random() * 100 < chance) {
+        const foe = cb.name;
+        c.combat = null;
+        chars[session] = c;
+        saveChars(chars);
+        saveStory([...getStory(), {
+          id: uid(), type: 'system', author: 'The Veil',
+          text: `${c.name} slips away from the ${foe} into the dark, heart hammering.`,
+          t: Date.now()
+        }]);
+        toast(`You escaped the ${foe}.`);
+        renderGame();
+      } else {
+        toast('You fail to escape!', 'red');
+        if (enemyTurn()) return;
+        chars[session] = c;
+        saveChars(chars);
+        renderGame();
+      }
+    }
+  });
 }
 
 /* ------------------------------------------------------------
@@ -937,6 +1185,66 @@ function wireInventory() {
 }
 
 /* ============================================================
+   CRAFTING
+   ============================================================ */
+
+function craftHTML() {
+  const c = myChar();
+  if (!c) return `<div class="panel"><div class="inv-empty">The Goddess does not craft — she wills things into being.</div></div>`;
+  const count = k => c.inventory.filter(i => i.key === k).length;
+  const rows = RECIPES.map((r, i) => {
+    const needsTxt = Object.entries(r.needs).map(([k, n]) => {
+      const have = k === 'gold' ? c.gold : count(k);
+      return `<span style="color:${have >= n ? 'var(--good)' : 'var(--bad)'}">${esc(k)} ${have}/${n}</span>`;
+    }).join(' · ');
+    const can = Object.entries(r.needs).every(([k, n]) => (k === 'gold' ? c.gold : count(k)) >= n);
+    return `
+      <div class="skill-card" style="${can ? '' : 'opacity:.55'}">
+        <div>
+          <div class="sk-name">${esc(r.out)} <span style="font-size:12px;color:var(--gold)">+${r.xp} XP</span></div>
+          <div class="sk-desc">${esc(r.desc)}</div>
+          <div style="font-size:13px;margin-top:4px">${needsTxt}</div>
+        </div>
+        <button class="btn btn-sm" data-craft="${i}" ${can ? '' : 'disabled'}>Craft</button>
+      </div>`;
+  }).join('');
+  return `<div class="panel">
+    <div class="panel-title">The Crafting Fire <span style="font-size:12px;color:var(--text-dim)">${c.gold} gold</span></div>
+    ${rows}
+  </div>`;
+}
+
+function wireCraft() {
+  document.querySelectorAll('[data-craft]').forEach(b => b.onclick = () => {
+    const chars = getChars();
+    const c = chars[session];
+    const r = RECIPES[parseInt(b.dataset.craft)];
+    if (!r) return;
+    const count = k => c.inventory.filter(i => i.key === k).length;
+    const can = Object.entries(r.needs).every(([k, n]) => (k === 'gold' ? c.gold : count(k)) >= n);
+    if (!can) return;
+    for (const [k, n] of Object.entries(r.needs)) {
+      if (k === 'gold') { c.gold -= n; continue; }
+      for (let j = 0; j < n; j++) {
+        const idx = c.inventory.findIndex(x => x.key === k);
+        if (idx >= 0) c.inventory.splice(idx, 1);
+      }
+    }
+    c.inventory.push({ id: uid(), key: r.out });
+    grantXP(c, r.xp);
+    chars[session] = c;
+    saveChars(chars);
+    saveStory([...getStory(), {
+      id: uid(), type: 'system', author: 'The Veil',
+      text: `${c.name} works the crafting fire and shapes ${r.out} (+${r.xp} XP).`,
+      t: Date.now()
+    }]);
+    toast(`⚒ Crafted ${r.out} (+${r.xp} XP).`);
+    renderGame();
+  });
+}
+
+/* ============================================================
    GODDESS SANCTUM (admin)
    ============================================================ */
 
@@ -982,6 +1290,60 @@ function adminHTML() {
         This cannot be undone.
       </p>
       <button class="btn btn-danger" id="burnChronicle">Burn the Chronicle</button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title purple">☽ Forge a Monster</div>
+      <div class="field"><label>Monster Name</label><input id="fmName" maxlength="40" placeholder="e.g. The Hollow King"></div>
+      <div class="field"><label>Description</label><textarea id="fmDesc" style="min-height:60px" placeholder="What horror is this?"></textarea></div>
+      <div class="effect-row">
+        <div class="field"><label>HP</label><input id="fmHp" type="number" min="10" max="9999" value="80"></div>
+        <div class="field"><label>Attack</label><input id="fmAtk" type="number" min="1" max="999" value="12"></div>
+      </div>
+      <div class="effect-row">
+        <div class="field"><label>XP Reward</label><input id="fmXp" type="number" min="0" max="99999" value="120"></div>
+        <div class="field"><label>Gold Reward</label><input id="fmGold" type="number" min="0" max="99999" value="75"></div>
+      </div>
+      <div class="field"><label>Item Reward (dropped on defeat)</label>
+        <select id="fmItem"><option value="">None</option>
+          ${Object.keys(ITEM_POOL).map(k => `<option>${esc(k)}</option>`).join('')}
+        </select></div>
+      <div class="field"><label>Hunting Grounds</label>
+        <select id="fmTarget">
+          <option value="">☠ Indiscriminate — hunts ANY soul</option>
+          ${names.map(([u, c]) => `<option value="${esc(u)}">⚔ Hunted: ${esc(c.name)} only</option>`).join('')}
+        </select>
+        <div class="hint">A targeted horror stalks its chosen soul. An indiscriminate one attacks anyone it finds — including your incarnation.</div>
+      </div>
+      <button class="btn btn-purple" id="fmUnleash">Unleash Upon the World</button>
+      <div id="fmList" style="margin-top:18px">
+        ${(() => {
+          const horrors = getMonsters();
+          if (!horrors.length) return '<div class="inv-empty">No horrors walk the world.</div>';
+          return horrors.map(m => `
+            <div class="player-row" style="${m.status === 'defeated' ? 'opacity:.55' : 'border-color:var(--blood)'}">
+              <div>
+                <div style="font-family:'Cinzel',serif;color:${m.status === 'defeated' ? 'var(--text-dim)' : 'var(--bad)'}">☠ ${esc(m.name)}
+                  <span style="font-size:11px;color:var(--text-dim)"> · ${m.hp} HP · ${m.atk} ATK · ${m.xp} XP / ${m.gold}g${m.item ? ' / ' + esc(m.item) : ''}</span>
+                </div>
+                <div style="font-size:13px;color:var(--text-dim)">${esc(m.desc)}</div>
+                <div style="font-size:12px;color:var(--text-dim)">${m.status === 'defeated'
+                  ? `SLAIN by ${esc(m.slainBy || 'a soul')}`
+                  : (m.target ? `HUNTING: ${esc(chars[m.target]?.name || m.target)}` : 'HUNTING: any soul it finds')}</div>
+              </div>
+              ${m.status === 'active' ? `<button class="btn btn-danger btn-sm" data-banish="${m.id}">Banish</button>` : ''}
+            </div>`).join('');
+        })()}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title" style="color:var(--bad)">☽ The Great Reset</div>
+      <p style="font-size:14px;color:var(--text-dim);margin-bottom:12px">
+        Unmake the world entirely: every account, every soul, every item, every forged skill and horror,
+        every page of the Chronicle — gone. The Veil is born again, empty. This cannot be undone.
+      </p>
+      <button class="btn btn-danger" id="greatReset">Unmake the World</button>
     </div>
 
     <div class="panel">
@@ -1185,6 +1547,62 @@ function wireAdmin() {
     DB.set('lastStir', Date.now());
     toast('☽ The Chronicle has been burned. A new epoch begins.', 'purple');
     renderGame();
+  };
+
+  // ---- Monster forge ----
+  const unleash = $('#fmUnleash');
+  if (unleash) {
+    unleash.onclick = () => {
+      const name = $('#fmName').value.trim();
+      const desc = $('#fmDesc').value.trim();
+      if (!name || !desc) return toast('A horror needs both a name and a description.', 'red');
+      const monsters = getMonsters();
+      monsters.push({
+        id: uid(), name, desc,
+        hp: Math.max(10, parseInt($('#fmHp').value) || 80),
+        atk: Math.max(1, parseInt($('#fmAtk').value) || 12),
+        xp: Math.max(0, parseInt($('#fmXp').value) || 0),
+        gold: Math.max(0, parseInt($('#fmGold').value) || 0),
+        item: $('#fmItem').value || null,
+        target: $('#fmTarget').value || null,
+        status: 'active',
+        lastAttack: {},
+        t: Date.now()
+      });
+      saveMonsters(monsters);
+      saveStory([...getStory(), {
+        id: uid(), type: 'goddess', author: 'The Goddess',
+        text: `${name} walks the world. ${desc}`,
+        t: Date.now()
+      }]);
+      toast(`☠ ${name} has been unleashed.`, 'purple');
+      renderGame();
+    };
+
+    document.querySelectorAll('[data-banish]').forEach(b => b.onclick = () => {
+      if (!confirm('Banish this horror? It will vanish — if any soul is mid-battle with it, the battle ends.')) return;
+      const id = b.dataset.banish;
+      saveMonsters(getMonsters().filter(m => m.id !== id));
+      const chars = getChars();
+      let changed = false;
+      for (const u of Object.keys(chars)) {
+        if (chars[u].combat?.monsterId === id) { chars[u].combat = null; changed = true; }
+      }
+      if (changed) saveChars(chars);
+      toast('☽ The horror is unmade.', 'purple');
+      renderGame();
+    });
+  }
+
+  // ---- The Great Reset ----
+  const reset = $('#greatReset');
+  if (reset) reset.onclick = () => {
+    if (!confirm('Unmake the ENTIRE world? Every account, soul, item, forged skill, monster and chronicle page will cease to exist. This cannot be undone.')) return;
+    if (!confirm('Final word: every player loses everything. The Veil is born again, empty. Proceed?')) return;
+    Object.keys(localStorage).filter(k => k.startsWith('sv_')).forEach(k => localStorage.removeItem(k));
+    session = null;
+    toast('☽ The world is unmade. Only the Veil remains.', 'purple');
+    renderAuth();
   };
 
   document.querySelectorAll('[data-quick]').forEach(b => b.onclick = () => {
