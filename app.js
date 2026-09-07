@@ -29,14 +29,28 @@ const CLASSES = {
 };
 
 const SKILLS = {
-  whirlwind:  { name: 'Whirlwind',      desc: 'Sweep all nearby foes in a storm of steel.', cost: 1 },
-  fireball:   { name: 'Fireball',       desc: 'Hurl a sphere of hungry flame.', cost: 1 },
-  shadowstep: { name: 'Shadowstep',     desc: 'Vanish into darkness and reappear behind your prey.', cost: 1 },
-  heal:       { name: 'Mend Flesh',     desc: 'Knit wounds closed with radiant light.', cost: 1 },
-  multishot:  { name: 'Multishot',      desc: 'Loose a fan of arrows in a heartbeat.', cost: 1 },
-  bloodpact:  { name: 'Blood Pact',     desc: 'Trade your own vitality for terrible power. (+5 STR while active)', cost: 2, reqLevel: 5 },
-  soulfire:   { name: 'Soulfire',       desc: 'Burn your own essence as fuel. Spells ignore all resistance.', cost: 2, reqLevel: 5 },
-  veilwalk:   { name: 'Veilwalk',       desc: 'Step between the world and the other side at will.', cost: 2, reqLevel: 8 },
+  // ---- Warrior ----
+  whirlwind:  { name: 'Whirlwind',      desc: 'Sweep all nearby foes in a storm of steel.', cost: 1, classes: ['Warrior'] },
+  cleave:     { name: 'Cleave',         desc: 'Split your strike through two foes at once.', cost: 1, classes: ['Warrior'] },
+  bloodpact:  { name: 'Blood Pact',     desc: 'Trade your own vitality for terrible power. (+5 STR while active)', cost: 2, reqLevel: 5, classes: ['Warrior'] },
+  warcry:     { name: 'War Cry',        desc: 'A roar that steels allies\' hearts and shakes enemy resolve.', cost: 2, reqLevel: 8, classes: ['Warrior'] },
+  // ---- Mage ----
+  fireball:   { name: 'Fireball',       desc: 'Hurl a sphere of hungry flame.', cost: 1, classes: ['Mage'] },
+  soulfire:   { name: 'Soulfire',       desc: 'Burn your own essence as fuel. Spells ignore all resistance.', cost: 2, reqLevel: 5, classes: ['Mage'] },
+  frostnova:  { name: 'Frost Nova',     desc: 'A ring of bitter cold erupts, rooting foes where they stand.', cost: 2, reqLevel: 8, classes: ['Mage'] },
+  // ---- Rogue ----
+  shadowstep: { name: 'Shadowstep',     desc: 'Vanish into darkness and reappear behind your prey.', cost: 1, classes: ['Rogue'] },
+  deathmark:  { name: 'Death Mark',     desc: 'Mark a target — your next strike against it deals double.', cost: 2, reqLevel: 5, classes: ['Rogue'] },
+  veilwalk:   { name: 'Veilwalk',       desc: 'Step between the world and the other side at will.', cost: 2, reqLevel: 8, classes: ['Rogue'] },
+  // ---- Cleric ----
+  heal:       { name: 'Mend Flesh',     desc: 'Knit wounds closed with radiant light.', cost: 1, classes: ['Cleric'] },
+  sanctuary:  { name: 'Sanctuary',      desc: 'Raise a ward of faith around an ally, turning blades aside.', cost: 2, reqLevel: 5, classes: ['Cleric'] },
+  holyfire:   { name: 'Holy Fire',      desc: 'Call white flame that scourges the unholy and mends the faithful.', cost: 2, reqLevel: 8, classes: ['Cleric'] },
+  // ---- Ranger ----
+  multishot:  { name: 'Multishot',      desc: 'Loose a fan of arrows in a heartbeat.', cost: 1, classes: ['Ranger'] },
+  deadeye:    { name: 'Deadeye',        desc: 'Your next shot cannot miss, and strikes where it hurts most.', cost: 2, reqLevel: 5, classes: ['Ranger'] },
+  callbeast:  { name: 'Call the Beast', desc: 'Summon a spectral beast to fight at your side for a time.', cost: 2, reqLevel: 8, classes: ['Ranger'] },
+  // ---- Universal (any class, high level) ----
   judgement:  { name: "Goddess' Judgement", desc: 'Call down the wrath of the heavens upon one target.', cost: 3, reqLevel: 12 }
 };
 
@@ -119,7 +133,7 @@ function charContext(c) {
   return `Name: ${c.name}. Level ${c.level} ${RACES[c.race].evo[c.raceTier]} ${c.cls}. ` +
     `Stats (STR/DEX/INT/VIT/LUK): ${c.stats.str}/${c.stats.dex}/${c.stats.int}/${c.stats.vit}/${c.stats.luk}. ` +
     `HP ${c.hp}/${charMaxHp(c)}, MP ${c.mp}/${charMaxMp(c)}, ${c.gold} gold. ` +
-    `Skills: ${c.skills.map(s => SKILLS[s].name).join(', ')}. ` +
+    `Skills: ${c.skills.map(skillName).join(', ')}. ` +
     `Blessings: ${c.blessings.length}. Curses: ${c.curses.length}. ` +
     `Equipment: ${Object.values(c.equipment).filter(Boolean).join(', ') || 'none'}.`;
 }
@@ -163,6 +177,23 @@ function getChars() { return DB.get('chars', {}); }
 function saveChars(c) { DB.set('chars', c); }
 function getStory() { return DB.get('story', []); }
 function saveStory(s) { DB.set('story', s); }
+function getCustomSkills() { return DB.get('customSkills', []); }
+function saveCustomSkills(s) { DB.set('customSkills', s); }
+function customSkillByKey(key) { return getCustomSkills().find(s => 'custom:' + s.id === key); }
+function skillName(key) { return SKILLS[key]?.name || customSkillByKey(key)?.name || key; }
+
+/* Apply a divine-forged skill's learning effect to a character.
+   Returns a short human-readable note of what happened (or null). */
+function applySkillEffect(c, s) {
+  const e = s.effect;
+  if (!e || e.type === 'none') return null;
+  if (e.type === 'stat') { c.stats[e.stat] = (c.stats[e.stat] || 0) + e.amount; return `${STAT_NAMES[e.stat]} +${e.amount}`; }
+  if (e.type === 'heal') { c.hp = Math.min(charMaxHp(c), c.hp + e.amount); return `${e.amount} HP restored`; }
+  if (e.type === 'mana') { c.mp = Math.min(charMaxMp(c), c.mp + e.amount); return `${e.amount} MP restored`; }
+  if (e.type === 'xp') { grantXP(c, e.amount); return `${e.amount} XP`; }
+  if (e.type === 'gold') { c.gold += e.amount; return `${e.amount} gold`; }
+  return null;
+}
 
 function currentUser() { return session ? getUsers()[session] : null; }
 function myChar() { const c = getChars(); return session ? c[session] : null; }
@@ -491,7 +522,8 @@ function wireStory() {
           `Recent chronicle:\n${chronicleContext()}\n\n` +
           `Write 2-3 sentences as the world's reaction — omens, whispers, the land itself responding to divine will. Address mortals as "mortals" or "children". Plain prose.`
         : `${charContext(c)}\n\nRecent chronicle:\n${chronicleContext()}\n\n` +
-          `The player just acted: "${text}"\n\nNarrate what happens next.`;
+          `The player just acted: "${text}"\n\n` +
+          `Write what happens IMMEDIATELY AFTER their action, as the direct consequence: the world's reaction, the result, what they see, feel, or must now face. Pick up the story exactly where their action leaves off — do not restate it, do not skip ahead. 2-4 sentences, second person, plain prose.`;
       const system = asGoddess
         ? CHRONICLER_SYSTEM + ' In this response you speak of how the WORLD reacts to the Goddess, not to a player.'
         : CHRONICLER_SYSTEM;
@@ -703,7 +735,9 @@ function skillsHTML() {
       <button class="btn btn-purple" id="evolveBtn" ${canEvolve ? '' : 'disabled'}>✦ Evolve into ${evo[nextTier]}</button>
       ${canEvolve ? '<div class="hint">Evolution grants +2 to every stat and restores you fully.</div>' : ''}`;
 
-  const skillRows = Object.entries(SKILLS).map(([key, s]) => {
+  const skillRows = Object.entries(SKILLS)
+    .filter(([key, s]) => !s.classes || s.classes.includes(c.cls) || c.skills.includes(key))
+    .map(([key, s]) => {
     const owned = c.skills.includes(key);
     const locked = !owned && s.reqLevel && c.level < s.reqLevel;
     return `
@@ -716,7 +750,7 @@ function skillsHTML() {
           ? '<span class="tag" style="color:var(--good);border-color:#2c5c42">LEARNED</span>'
           : `<button class="btn btn-dark btn-sm" data-skill="${key}" ${locked || c.skillPoints < s.cost ? 'disabled' : ''}>Learn (${s.cost} pt)</button>`}
       </div>`;
-  }).join('');
+    }).join('');
 
   return `
   <div class="panel">
@@ -727,9 +761,43 @@ function skillsHTML() {
     ${evolveBlock}
   </div>
   <div class="panel">
-    <div class="panel-title">Skills</div>
+    <div class="panel-title">Skills of the ${esc(c.cls)} <span style="font-size:12px;color:var(--text-dim)">class-locked · universal skills at high level</span></div>
     ${skillRows}
+  </div>
+  ${(() => {
+    const eligible = getCustomSkills().filter(s =>
+      c.skills.includes('custom:' + s.id) ||
+      (c.level >= s.reqLevel && (!s.cls || s.cls === c.cls) && (!s.race || s.race === c.race))
+    );
+    if (!eligible.length) return '';
+    return `
+  <div class="panel" style="border-color:var(--purple-dim)">
+    <div class="panel-title purple">☽ Skills of the Goddess' Forge</div>
+    ${eligible.map(s => {
+      const key = 'custom:' + s.id;
+      const owned = c.skills.includes(key);
+      const locked = !owned && c.level < s.reqLevel;
+      const effNote = !s.effect || s.effect.type === 'none' ? '' :
+        s.effect.type === 'stat' ? `On learning: ${STAT_NAMES[s.effect.stat]} +${s.effect.amount}` :
+        s.effect.type === 'heal' ? `On learning: restores ${s.effect.amount} HP` :
+        s.effect.type === 'mana' ? `On learning: restores ${s.effect.amount} MP` :
+        s.effect.type === 'xp' ? `On learning: +${s.effect.amount} XP` :
+        `On learning: +${s.effect.amount} gold`;
+      return `
+      <div class="skill-card ${owned ? 'owned' : locked ? 'locked' : ''}" style="${owned ? '' : 'border-color:var(--purple-dim)'}">
+        <div>
+          <div class="sk-name" style="${owned ? '' : 'color:var(--purple)'}">${owned ? '✦ ' : '☽ '}${esc(s.name)}
+            <span style="font-size:11px;color:var(--text-dim)"> · ${s.cost} pt · req Lv ${s.reqLevel}${s.cls ? ' · ' + esc(s.cls) : ''}${s.race ? ' · ' + esc(s.race) : ''}</span>
+          </div>
+          <div class="sk-desc">${esc(s.desc)}${effNote ? ` <span style="color:#ffe08a">— ${effNote}</span>` : ''}</div>
+        </div>
+        ${owned
+          ? '<span class="tag" style="color:var(--good);border-color:#2c5c42">LEARNED</span>'
+          : `<button class="btn btn-purple btn-sm" data-custom-skill="${s.id}" ${locked || c.skillPoints < s.cost ? 'disabled' : ''}>Learn (${s.cost} pt)</button>`}
+      </div>`;
+    }).join('')}
   </div>`;
+  })()}`;
 }
 
 function wireSkills() {
@@ -759,10 +827,34 @@ function wireSkills() {
     const key = b.dataset.skill, s = SKILLS[key];
     if (c.skills.includes(key) || c.skillPoints < s.cost) return;
     if (s.reqLevel && c.level < s.reqLevel) return;
+    if (s.classes && !s.classes.includes(c.cls) && !c.skills.includes(key)) return; // class gate
     c.skillPoints -= s.cost;
     c.skills.push(key);
     saveChars(chars);
     toast(`✦ Learned ${s.name}.`);
+    renderGame();
+  });
+
+  // Divine-forged skills
+  document.querySelectorAll('[data-custom-skill]').forEach(b => b.onclick = () => {
+    const chars = getChars();
+    const c = chars[session];
+    const s = getCustomSkills().find(x => x.id === b.dataset.customSkill);
+    if (!s || c.skills.includes('custom:' + s.id) || c.skillPoints < s.cost) return;
+    if (c.level < s.reqLevel) return;
+    if (s.cls && s.cls !== c.cls) return;
+    if (s.race && s.race !== c.race) return;
+    c.skillPoints -= s.cost;
+    c.skills.push('custom:' + s.id);
+    const note = applySkillEffect(c, s);
+    chars[session] = c;
+    saveChars(chars);
+    saveStory([...getStory(), {
+      id: uid(), type: 'system', author: 'The Veil',
+      text: `${c.name} receives the Goddess' working — ${s.name}${note ? ` (${note})` : ''}. A violet sigil flickers behind their eyes, then is gone.`,
+      t: Date.now()
+    }]);
+    toast(`☽ Learned ${s.name}${note ? ` — ${note}` : '.'}`, 'purple');
     renderGame();
   });
 }
@@ -884,6 +976,70 @@ function adminHTML() {
     </div>
 
     <div class="panel">
+      <div class="panel-title purple">☽ Epoch's End</div>
+      <p style="font-size:14px;color:var(--text-dim);margin-bottom:12px">
+        Burn every page of the Chronicle. All souls, gold and stories remain — only history is unwritten.
+        This cannot be undone.
+      </p>
+      <button class="btn btn-danger" id="burnChronicle">Burn the Chronicle</button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title purple">☽ Forge a New Skill</div>
+      <div class="field"><label>Skill Name</label><input id="fsName" maxlength="40" placeholder="e.g. Midnight Bargain"></div>
+      <div class="field"><label>Description</label><textarea id="fsDesc" style="min-height:60px" placeholder="What does this skill do?"></textarea></div>
+      <div class="effect-row">
+        <div class="field"><label>Skill Point Cost</label><input id="fsCost" type="number" min="1" max="9" value="2"></div>
+        <div class="field"><label>Required Level</label><input id="fsLevel" type="number" min="1" max="99" value="1"></div>
+      </div>
+      <div class="effect-row">
+        <div class="field"><label>Class Requirement</label>
+          <select id="fsClass"><option value="">Any class</option>
+            ${Object.keys(CLASSES).map(cl => `<option>${cl}</option>`).join('')}
+          </select></div>
+        <div class="field"><label>Race Requirement</label>
+          <select id="fsRace"><option value="">Any race</option>
+            ${Object.keys(RACES).map(r => `<option>${r}</option>`).join('')}
+          </select></div>
+      </div>
+      <div class="effect-row">
+        <div class="field"><label>Learning Effect</label>
+          <select id="fsEffect">
+            <option value="none">None (passive skill)</option>
+            <option value="stat">Permanent Stat Bonus</option>
+            <option value="heal">Restore HP</option>
+            <option value="mana">Restore MP</option>
+            <option value="xp">Grant XP</option>
+            <option value="gold">Grant Gold</option>
+          </select></div>
+        <div class="field" id="fsAmountRow" style="display:none"><label id="fsAmountLabel">Amount</label><input id="fsAmount" type="number" min="1" max="999" value="2"></div>
+      </div>
+      <div class="effect-row" id="fsStatRow" style="display:none">
+        <div class="field"><label>Stat</label>
+          <select id="fsStat">${Object.keys(STAT_NAMES).map(k => `<option value="${k}">${STAT_NAMES[k]}</option>`).join('')}</select></div>
+        <div></div>
+      </div>
+      <button class="btn btn-purple" id="fsForge">Forge Skill</button>
+
+      <div id="fsList" style="margin-top:18px">
+        ${(() => {
+          const forged = getCustomSkills();
+          if (!forged.length) return '<div class="inv-empty">No divine skills forged yet.</div>';
+          return forged.map(s => `
+            <div class="player-row">
+              <div>
+                <div style="font-family:'Cinzel',serif;color:var(--purple)">✦ ${esc(s.name)}
+                  <span style="font-size:11px;color:var(--text-dim)"> · ${s.cost} pt · Lv ${s.reqLevel}${s.cls ? ' · ' + esc(s.cls) : ''}${s.race ? ' · ' + esc(s.race) : ''}</span>
+                </div>
+                <div style="font-size:13px;color:var(--text-dim)">${esc(s.desc)}</div>
+              </div>
+              <button class="btn btn-danger btn-sm" data-unforge="${s.id}">Unforge</button>
+            </div>`).join('');
+        })()}
+      </div>
+    </div>
+
+    <div class="panel">
       <div class="panel-title purple">Souls Under Your Gaze</div>
       ${names.length === 0 ? '<div class="inv-empty">No mortal souls yet. They will come.</div>' : names.map(([u, c]) => `
         <div class="player-row">
@@ -970,6 +1126,64 @@ function wireAdmin() {
     }
     if (kind) applyEffect(target, kind, value, itemName);
     toast(kind === 'curse' || kind === 'smite' ? '☠ Your will be done.' : '☀ Your will be done.', 'purple');
+    renderGame();
+  };
+
+  // ---- Divine skill forge ----
+  const fsEffect = $('#fsEffect');
+  if (fsEffect) {
+    const syncForgeRows = () => {
+      const t = fsEffect.value;
+      $('#fsAmountRow').style.display = (t === 'none') ? 'none' : 'block';
+      $('#fsStatRow').style.display = (t === 'stat') ? 'grid' : 'none';
+      $('#fsAmountLabel').textContent = t === 'stat' ? 'Bonus Amount' : t === 'xp' ? 'XP' : t === 'gold' ? 'Gold' : t === 'heal' ? 'HP' : 'MP';
+    };
+    fsEffect.onchange = syncForgeRows; syncForgeRows();
+
+    $('#fsForge').onclick = () => {
+      const name = $('#fsName').value.trim();
+      const desc = $('#fsDesc').value.trim();
+      if (!name || !desc) return toast('A forged skill needs both a name and a description.', 'red');
+      const type = fsEffect.value;
+      const effect = { type };
+      if (type === 'stat') effect.stat = $('#fsStat').value;
+      if (type !== 'none') effect.amount = Math.max(1, parseInt($('#fsAmount').value) || 1);
+      const forged = getCustomSkills();
+      forged.push({
+        id: uid(), name, desc,
+        cost: Math.max(1, parseInt($('#fsCost').value) || 1),
+        reqLevel: Math.max(1, parseInt($('#fsLevel').value) || 1),
+        cls: $('#fsClass').value || null,
+        race: $('#fsRace').value || null,
+        effect
+      });
+      saveCustomSkills(forged);
+      saveStory([...getStory(), {
+        id: uid(), type: 'goddess', author: 'The Goddess',
+        text: `A new working enters the world: ${name}. ${desc}`,
+        t: Date.now()
+      }]);
+      toast(`☽ Forged "${name}". Eligible souls will see it among their skills.`, 'purple');
+      renderGame();
+    };
+
+    document.querySelectorAll('[data-unforge]').forEach(b => b.onclick = () => {
+      if (!confirm('Unforge this skill? Souls who already learned it keep it, but no one new may learn it.')) return;
+      saveCustomSkills(getCustomSkills().filter(s => s.id !== b.dataset.unforge));
+      renderGame();
+    });
+  }
+
+  const burn = $('#burnChronicle');
+  if (burn) burn.onclick = () => {
+    if (!confirm('Burn the entire Chronicle? Every written page will turn to ash. This cannot be undone.')) return;
+    saveStory([{
+      id: uid(), type: 'goddess', author: 'The Goddess',
+      text: 'The Chronicle burns. Page by page, history turns to ash on a wind that smells of myrrh and old blood. When the last ember dies, a new epoch begins — and the quill waits, hungry, for its first new word.',
+      t: Date.now()
+    }]);
+    DB.set('lastStir', Date.now());
+    toast('☽ The Chronicle has been burned. A new epoch begins.', 'purple');
     renderGame();
   };
 
