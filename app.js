@@ -66,7 +66,25 @@ const ITEM_POOL = {
   'Bulwark Plate':    { type: 'armor', desc: 'A wall you can wear. +5 VIT', effect: { vit: 5 } },
   'Circlet of Stars': { type: 'armor', desc: 'Cold light hums against your brow. +4 INT, +2 LUK', effect: { int: 4, luk: 2 } },
   'Goddess\' Sigil':  { type: 'trinket', desc: 'Proof the Goddess has noticed you. +3 to all stats.', effect: { str: 3, dex: 3, int: 3, vit: 3, luk: 3 } },
-  'Cursed Idol':      { type: 'trinket', desc: 'It watches back. +6 STR, but the Goddess frowns.', effect: { str: 6 } }
+  'Cursed Idol':      { type: 'trinket', desc: 'It watches back. +6 STR, but the Goddess frowns.', effect: { str: 6 } },
+  'Iron Shard':       { type: 'material', desc: 'A fragment of star-fallen metal. Used to upgrade gear.', effect: {} },
+  'Aether Shard':     { type: 'material', desc: 'Crystallized breath of the Veil. Used to enchant gear.', effect: {} }
+};
+
+const LOCATIONS = [
+  { id: 'emberwick',   name: 'Emberwick Village', type: 'Village', desc: 'Mud, woodsmoke, and the last warm hearthfires. Every soul begins here.' },
+  { id: 'whisperwood', name: 'The Whisperwood',   type: 'Forest',  desc: 'Trees that lean closer when you are not looking.' },
+  { id: 'hollowdeep',  name: 'Hollowdeep Caves',  type: 'Cave',    desc: 'The dark down here is older than the light.' },
+  { id: 'duskmere',    name: 'Duskmere City',     type: 'City',    desc: 'Ten thousand lanterns, and not one of them honest.' }
+];
+const locById = id => LOCATIONS.find(l => l.id === id);
+
+const ENCHANTS = {
+  ember:   { name: 'of Embers',    stats: { str: 2 }, desc: '+2 STR' },
+  deep:    { name: 'of the Deep',  stats: { int: 2 }, desc: '+2 INT' },
+  dusk:    { name: 'of Dusk',      stats: { dex: 2 }, desc: '+2 DEX' },
+  bulwark: { name: 'of the Bulwark', stats: { vit: 2 }, desc: '+2 VIT' },
+  fortune: { name: 'of Fortune',   stats: { luk: 2 }, desc: '+2 LUK' }
 };
 
 const ENEMIES = [
@@ -201,6 +219,8 @@ function saveCustomSkills(s) { DB.set('customSkills', s); }
 function getMonsters() { return DB.get('monsters', []); }
 function saveMonsters(m) { DB.set('monsters', m); }
 function activeMonsters() { return getMonsters().filter(m => m.status === 'active'); }
+function getQuests() { return DB.get('quests', []); }
+function saveQuests(q) { DB.set('quests', q); }
 function customSkillByKey(key) { return getCustomSkills().find(s => 'custom:' + s.id === key); }
 function skillName(key) { return SKILLS[key]?.name || customSkillByKey(key)?.name || key; }
 
@@ -235,10 +255,16 @@ function charMaxMp(c) { return 20 + c.stats.int * 6 + c.level * 4 + c.raceTier *
 function gearBonus(c) {
   const out = { str: 0, dex: 0, int: 0, vit: 0, luk: 0 };
   for (const slot of ['weapon', 'armor', 'trinket']) {
-    const item = c.equipment[slot];
-    if (!item) continue;
-    const eff = ITEM_POOL[item]?.effect || {};
-    for (const k in eff) if (out[k] !== undefined) out[k] += eff[k];
+    const itemId = c.equipment[slot];
+    if (!itemId) continue;
+    const entry = c.inventory.find(i => i.id === itemId);
+    if (!entry) continue;
+    const eff = ITEM_POOL[entry.key]?.effect || {};
+    const plus = entry.plus || 0;
+    for (const k in eff) if (out[k] !== undefined) out[k] += eff[k] + plus;
+    if (entry.enchant && ENCHANTS[entry.enchant]) {
+      for (const k in ENCHANTS[entry.enchant].stats) if (out[k] !== undefined) out[k] += ENCHANTS[entry.enchant].stats[k];
+    }
   }
   return out;
 }
@@ -350,8 +376,14 @@ function renderCreateChar() {
       gold: 25,
       hp: null, mp: null,
       equipment: { weapon: null, armor: null, trinket: null },
-      inventory: [{ id: uid(), key: 'Healing Draught' }, { id: uid(), key: 'Rusty Sword' }],
+      inventory: [
+        { id: uid(), key: 'Healing Draught', plus: 0, enchant: null },
+        { id: uid(), key: 'Rusty Sword', plus: 0, enchant: null }
+      ],
       blessings: [], curses: [],
+      loc: 'emberwick',
+      quests: { active: [], done: [] },
+      dead: false, offering: null,
       created: Date.now()
     };
     const c = chars[session];
@@ -381,7 +413,7 @@ function renderGame() {
 
   const tabs = [
     ['story', 'Chronicle'], ['players', 'Souls'], ['character', 'Character'],
-    ['skills', 'Skills & Evolution'], ['inventory', 'Inventory'], ['craft', 'Craft']
+    ['skills', 'Skills & Evolution'], ['inventory', 'Inventory'], ['craft', 'Craft'], ['quests', 'Quests']
   ];
   if (isAdmin) tabs.push(['admin', '☽ Goddess Sanctum']);
 
@@ -411,6 +443,7 @@ function renderGame() {
   else if (view === 'skills') root.innerHTML = skillsHTML();
   else if (view === 'inventory') root.innerHTML = inventoryHTML();
   else if (view === 'craft') root.innerHTML = craftHTML();
+  else if (view === 'quests') root.innerHTML = questsHTML();
   else if (view === 'admin' && isAdmin) root.innerHTML = adminHTML();
   else { view = 'story'; root.innerHTML = storyHTML(); }
 
@@ -419,6 +452,7 @@ function renderGame() {
   wireSkills();
   wireInventory();
   wireCraft();
+  wireQuests();
   wireAdmin();
 }
 
@@ -460,9 +494,10 @@ function storyHTML() {
         </label>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn ${isAdmin ? 'btn-purple' : ''}" id="storyPost">${isAdmin ? 'Unleash Upon the World' : 'Act'}</button>
-          ${(!isAdmin || c) ? '<button class="btn btn-dark" id="omenBtn" title="The Chronicler speaks of things to come">✦ Seek an Omen</button>' : ''}
-          ${(!isAdmin || c) ? '<button class="btn btn-dark" id="huntBtn" title="Hunt the dark for XP and gold">⚔ Hunt</button>' : ''}
+          ${(!isAdmin || c) && !c?.dead ? '<button class="btn btn-dark" id="omenBtn" title="The Chronicler speaks of things to come">✦ Seek an Omen</button>' : ''}
+          ${(!isAdmin || c) && !c?.dead ? '<button class="btn btn-dark" id="huntBtn" title="Hunt the dark for XP and gold">⚔ Hunt</button>' : ''}
         </div>
+        ${c?.dead ? '<div style="margin-top:10px;font-size:14px;color:var(--bad);font-style:italic">The dead do not act. Your soul waits on the Character tab, at the threshold.</div>' : ''}
         <div id="aiStatus" style="margin-top:10px;font-size:14px;color:var(--purple);font-style:italic;min-height:18px"></div>
       </div>
       <div class="panel">
@@ -589,6 +624,7 @@ function wireStory() {
   btn.onclick = async () => {
     const text = $('#storyText').value.trim();
     if (!text) return;
+    if (myChar()?.dead) return toast('The dead do not act. Wait upon the Goddess at the threshold.', 'red');
     const useAI = $('#aiNarrate')?.checked;
     const user = currentUser();
     const isAdmin = user.role === 'goddess';
@@ -656,7 +692,7 @@ function wireStory() {
   if (hunt) hunt.onclick = async () => {
     const chars = getChars();
     const c = chars[session];
-    if (!c || c.combat) return;
+    if (!c || c.combat || c.dead) return;
     // A horror already stalking this soul may strike when they go hunting.
     const stalker = activeMonsters().find(m => {
       if (m.target && m.target !== session) return false;
@@ -705,16 +741,18 @@ function wireStory() {
       cb.round++;
       if (c.hp <= 0) {
         const foe = cb.name;
-        c.hp = 1;
+        c.hp = 0;
         c.combat = null;
+        c.dead = true;
+        c.offering = null;
         chars[session] = c;
         saveChars(chars);
         saveStory([...getStory(), {
           id: uid(), type: 'system', author: 'The Veil',
-          text: `${c.name} falls to the ${foe} and is left broken in the dark. The Veil, for its own reasons, refuses to let the story end — they wake at a roadside shrine, alive and owing.`,
+          text: `${c.name} falls to the ${foe}. Their body cools in the dark — but their soul does not pass on. It waits, kneeling, at the threshold of the Goddess.`,
           t: Date.now()
         }]);
-        toast('☠ Defeat — you wake at a shrine, alive but having gained nothing.', 'red');
+        toast('☠ You have died. Your soul waits at the threshold — make an offering.', 'red');
         renderGame();
         return true;
       }
@@ -890,6 +928,7 @@ function playersHTML() {
 function characterHTML() {
   const c = myChar();
   if (!c) return `<div class="panel"><div class="inv-empty">The Goddess has no sheet — she is the sheet.</div></div>`;
+  if (c.dead) return deathHTML(c);
   const es = effStats(c);
   const maxHp = charMaxHp(c), maxMp = charMaxMp(c);
   const xpNeed = XP_FOR_LEVEL(c.level);
@@ -939,7 +978,85 @@ function characterHTML() {
   </div>`;
 }
 
+function deathHTML(c) {
+  const skills = c.skills.filter(k => SKILLS[k] || customSkillByKey(k));
+  const treasures = c.inventory.filter(i => ITEM_POOL[i.key]?.type === 'trinket' || ITEM_POOL[i.key]?.type === 'weapon' || ITEM_POOL[i.key]?.type === 'armor');
+  const offered = c.offering;
+  return `
+  <div class="panel" style="border-color:var(--blood);text-align:center;padding:40px 24px">
+    <div style="font-family:'Cinzel',serif;font-size:28px;color:var(--bad);letter-spacing:3px;margin-bottom:8px">☠ YOU ARE DEAD ☠</div>
+    <p style="font-style:italic;color:var(--text-dim);max-width:480px;margin:0 auto 24px">
+      Your soul kneels at the threshold. The Goddess weighs all things — offer gold, a skill, or a treasure,
+      and perhaps she will breathe you back into the world. Offer poorly... and she may unmake you entirely.
+    </p>
+    ${offered ? `
+      <div style="border:1px dashed var(--gold-dim);padding:16px;max-width:440px;margin:0 auto">
+        <div style="font-family:'Cinzel',serif;color:var(--gold);margin-bottom:6px">OFFERING MADE</div>
+        <div style="color:var(--text-dim)">${esc(offered.desc)}</div>
+        <div style="font-size:13px;color:var(--text-dim);margin-top:8px;font-style:italic">Now you wait upon her pleasure.</div>
+      </div>`
+    : `
+      <div style="max-width:440px;margin:0 auto;text-align:left">
+        <div class="field"><label>What do you offer?</label>
+          <select id="offType">
+            <option value="gold">Gold — ${c.gold} carried</option>
+            ${skills.length ? `<option value="skill">A skill — ${skills.length} to give</option>` : ''}
+            ${treasures.length ? `<option value="treasure">A treasure — ${treasures.length} in your pack</option>` : ''}
+          </select>
+        </div>
+        <div class="field" id="offGoldRow"><label>Amount of Gold</label>
+          <input id="offGold" type="number" min="1" max="${c.gold}" value="${Math.max(1, Math.floor(c.gold / 2))}"></div>
+        <div class="field" id="offSkillRow" style="display:none"><label>Skill to Surrender</label>
+          <select id="offSkill">${skills.map(k => `<option value="${esc(k)}">${esc(skillName(k))}</option>`).join('')}</select></div>
+        <div class="field" id="offTreasureRow" style="display:none"><label>Treasure to Surrender</label>
+          <select id="offTreasure">${treasures.map(i => `<option value="${esc(i.id)}">${esc(itemLabel(i))}</option>`).join('')}</select></div>
+        <button class="btn btn-block" id="offMake">Make the Offering</button>
+      </div>`}
+  </div>`;
+}
+
 function wireCharacter() {
+  const offType = $('#offType');
+  if (offType) {
+    const sync = () => {
+      $('#offGoldRow').style.display = offType.value === 'gold' ? 'block' : 'none';
+      $('#offSkillRow').style.display = offType.value === 'skill' ? 'block' : 'none';
+      $('#offTreasureRow').style.display = offType.value === 'treasure' ? 'block' : 'none';
+    };
+    offType.onchange = sync; sync();
+    $('#offMake').onclick = () => {
+      const chars = getChars();
+      const c = chars[session];
+      if (!c?.dead || c.offering) return;
+      const t = offType.value;
+      let offering;
+      if (t === 'gold') {
+        const amt = Math.min(c.gold, Math.max(1, parseInt($('#offGold').value) || 0));
+        if (amt < 1) return toast('You have no gold to offer.', 'red');
+        offering = { type: 'gold', amount: amt, desc: `${amt} gold` };
+      } else if (t === 'skill') {
+        const k = $('#offSkill').value;
+        if (!c.skills.includes(k)) return;
+        offering = { type: 'skill', skill: k, desc: `the skill ${skillName(k)}` };
+      } else {
+        const id = $('#offTreasure').value;
+        const it = c.inventory.find(i => i.id === id);
+        if (!it) return;
+        offering = { type: 'treasure', itemId: id, desc: `the treasure ${it.key}${it.plus ? ' +' + it.plus : ''}` };
+      }
+      c.offering = offering;
+      chars[session] = c;
+      saveChars(chars);
+      saveStory([...getStory(), {
+        id: uid(), type: 'system', author: 'The Veil',
+        text: `A dead soul makes an offering at the threshold: ${c.name} offers ${offering.desc}. The Goddess considers.`,
+        t: Date.now()
+      }]);
+      toast('Your offering is made. Wait upon her pleasure.');
+      renderGame();
+    };
+  }
+
   document.querySelectorAll('.stat-btn').forEach(b => b.onclick = () => {
     const chars = getChars();
     const c = chars[session];
@@ -1111,31 +1228,50 @@ function wireSkills() {
    INVENTORY
    ============================================================ */
 
+function itemLabel(it) {
+  const def = ITEM_POOL[it.key];
+  const plus = it.plus > 0 ? ` +${it.plus}` : '';
+  const enc = it.enchant ? ` ${ENCHANTS[it.enchant].name}` : '';
+  if (!def || def.type === 'material') return esc(it.key);
+  return `${esc(it.key)}${plus}<span style="color:var(--purple)">${enc}</span>`;
+}
+
 function inventoryHTML() {
   const c = myChar();
   if (!c) return `<div class="panel"><div class="inv-empty">The Goddess has no sheet — she is the sheet.</div></div>`;
   const slots = ['weapon', 'armor', 'trinket'];
-  const eqRows = slots.map(s => `
+  const eqRows = slots.map(s => {
+    const entry = c.inventory.find(i => i.id === c.equipment[s]);
+    return `
     <div class="player-row">
       <div><span style="font-family:'Cinzel',serif;font-size:12px;letter-spacing:1px;color:var(--text-dim)">${s.toUpperCase()}</span>
-      <div>${c.equipment[s] ? `<span style="color:var(--gold)">${esc(c.equipment[s])}</span> <span style="font-size:12px;color:var(--text-dim)">— ${esc(ITEM_POOL[c.equipment[s]].desc)}</span>` : '<span class="inv-empty">— empty —</span>'}</div></div>
-      ${c.equipment[s] ? `<button class="btn btn-dark btn-sm" data-unequip="${s}">Unequip</button>` : ''}
-    </div>`).join('');
+      <div>${entry ? `<span style="color:var(--gold)">${itemLabel(entry)}</span> <span style="font-size:12px;color:var(--text-dim)">— ${esc(ITEM_POOL[entry.key].desc)}</span>` : '<span class="inv-empty">— empty —</span>'}</div></div>
+      ${entry ? `<button class="btn btn-dark btn-sm" data-unequip="${s}">Unequip</button>` : ''}
+    </div>`;
+  }).join('');
 
   const invRows = c.inventory.length === 0
     ? '<div class="inv-empty">Your pack is empty. The Goddess may provide... or you may find treasure in the story.</div>'
     : `<div class="inv-grid">${c.inventory.map(it => {
         const def = ITEM_POOL[it.key];
-        const isGear = def.type !== 'consumable';
-        const equipped = Object.values(c.equipment).includes(it.key);
+        const isGear = def.type !== 'consumable' && def.type !== 'material';
+        const isMat = def.type === 'material';
+        const equipped = Object.values(c.equipment).includes(it.id);
+        const upgGold = 30 * ((it.plus || 0) + 1);
         return `
         <div class="inv-item ${equipped ? 'equipped' : ''}">
-          <div class="it-name">${esc(it.key)}</div>
-          <div class="it-type">${def.type}${equipped ? ' · equipped' : ''}</div>
+          <div class="it-name">${itemLabel(it)}</div>
+          <div class="it-type">${def.type}${equipped ? ' · equipped' : ''}${isGear && (it.plus || 0) < 10 ? ` · upgrade +${(it.plus || 0) + 1}: ${upgGold}g + 1 Iron Shard` : ''}</div>
           <div class="it-desc">${esc(def.desc)}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
           ${isGear
-            ? `<button class="btn btn-sm" data-equip="${it.id}" ${equipped ? 'disabled' : ''}>${equipped ? 'Equipped' : 'Equip'}</button>`
-            : `<button class="btn btn-sm" data-use="${it.id}">Use</button>`}
+            ? `<button class="btn btn-sm" data-equip="${it.id}" ${equipped ? 'disabled' : ''}>${equipped ? 'Equipped' : 'Equip'}</button>
+               ${(it.plus || 0) < 10 ? `<button class="btn btn-dark btn-sm" data-upgrade="${it.id}" ${c.gold >= upgGold && c.inventory.some(i => i.key === 'Iron Shard') ? '' : 'disabled'}>Forge +${(it.plus || 0) + 1}</button>` : '<span class="tag" style="color:var(--gold);border-color:var(--gold-dim)">MAX +10</span>'}
+               ${!it.enchant ? `<button class="btn btn-purple btn-sm" data-enchant="${it.id}" ${c.gold >= 40 && c.inventory.some(i => i.key === 'Aether Shard') ? '' : 'disabled'}>Enchant</button>` : ''}`
+            : isMat
+              ? '<span class="tag">material</span>'
+              : `<button class="btn btn-sm" data-use="${it.id}">Use</button>`}
+          </div>
         </div>`;
       }).join('')}</div>`;
 
@@ -1170,9 +1306,42 @@ function wireInventory() {
     const item = c.inventory.find(i => i.id === b.dataset.equip);
     if (!item) return;
     const type = ITEM_POOL[item.key].type;
-    c.equipment[type] = item.key;
+    c.equipment[type] = item.id;
     saveChars(chars);
     toast(`Equipped ${item.key}.`);
+    renderGame();
+  });
+
+  document.querySelectorAll('[data-upgrade]').forEach(b => b.onclick = () => {
+    const chars = getChars();
+    const c = chars[session];
+    const item = c.inventory.find(i => i.id === b.dataset.upgrade);
+    if (!item || (item.plus || 0) >= 10) return;
+    const cost = 30 * ((item.plus || 0) + 1);
+    const shard = c.inventory.find(i => i.key === 'Iron Shard');
+    if (c.gold < cost || !shard) return;
+    c.gold -= cost;
+    c.inventory.splice(c.inventory.indexOf(shard), 1);
+    item.plus = (item.plus || 0) + 1;
+    saveChars(chars);
+    toast(`⚒ Forged ${item.key} to +${item.plus} (−${cost}g, 1 Iron Shard).`);
+    renderGame();
+  });
+
+  document.querySelectorAll('[data-enchant]').forEach(b => b.onclick = () => {
+    const chars = getChars();
+    const c = chars[session];
+    const item = c.inventory.find(i => i.id === b.dataset.enchant);
+    if (!item || item.enchant) return;
+    const shard = c.inventory.find(i => i.key === 'Aether Shard');
+    if (c.gold < 40 || !shard) return;
+    const keys = Object.keys(ENCHANTS);
+    const pick = ENCHANTS[keys[Math.floor(Math.random() * keys.length)]];
+    c.gold -= 40;
+    c.inventory.splice(c.inventory.indexOf(shard), 1);
+    item.enchant = keys.find(k => ENCHANTS[k] === pick);
+    saveChars(chars);
+    toast(`✦ ${item.key} is now ${pick.name} (${pick.desc}).`, 'purple');
     renderGame();
   });
   document.querySelectorAll('[data-unequip]').forEach(b => b.onclick = () => {
@@ -1240,6 +1409,115 @@ function wireCraft() {
       t: Date.now()
     }]);
     toast(`⚒ Crafted ${r.out} (+${r.xp} XP).`);
+    renderGame();
+  });
+}
+
+/* ============================================================
+   QUESTS & LOCATIONS
+   ============================================================ */
+
+function questsHTML() {
+  const c = myChar();
+  if (!c) return `<div class="panel"><div class="inv-empty">The Goddess does not quest — the world quests for her.</div></div>`;
+  c.quests = c.quests || { active: [], done: [] };
+  const here = locById(c.loc) || LOCATIONS[0];
+  const all = getQuests();
+  const mine = all.filter(q => (q.targets === null || q.targets.includes(session)) && !c.quests.done.includes(q.id));
+  const active = mine.filter(q => c.quests.active.includes(q.id));
+  const offered = mine.filter(q => !c.quests.active.includes(q.id));
+  const done = all.filter(q => c.quests.done.includes(q.id));
+
+  const questRow = (q, isActive) => `
+    <div class="skill-card" style="${isActive ? 'border-color:var(--gold-dim)' : 'opacity:.85'}">
+      <div>
+        <div class="sk-name">${isActive ? '◆ ' : '◇ '}${esc(q.title)}
+          ${q.divine ? '<span class="tag world">DIVINE QUEST</span>' : `<span class="tag">${esc(q.giver || 'A stranger')}</span>`}
+        </div>
+        <div class="sk-desc">${esc(q.desc)}</div>
+        <div style="font-size:13px;color:var(--text-dim);margin-top:3px">
+          📍 ${esc(locById(q.loc)?.name || 'anywhere')} · rewards: <span style="color:var(--gold)">${q.xp} XP, ${q.gold} gold${q.item ? ', ' + esc(q.item) : ''}</span>
+        </div>
+      </div>
+      ${isActive
+        ? `<button class="btn btn-sm" data-complete-quest="${q.id}" ${c.loc === q.loc ? '' : 'disabled'}>${c.loc === q.loc ? 'Complete' : 'Go to ' + esc(locById(q.loc)?.name || '?')}</button>`
+        : `<button class="btn btn-dark btn-sm" data-accept-quest="${q.id}">Accept</button>`}
+    </div>`;
+
+  return `
+  <div class="panel">
+    <div class="panel-title">Where You Stand <span style="font-size:12px;color:var(--text-dim)">${esc(here.type)}</span></div>
+    <p style="font-size:15px;font-style:italic;color:var(--text-dim);margin-bottom:14px">${esc(here.desc)}</p>
+    <div class="field"><label>Travel</label>
+      <select id="travelSel">
+        ${LOCATIONS.filter(l => l.id !== c.loc).map(l => `<option value="${l.id}">${esc(l.name)} — ${esc(l.type)}</option>`).join('')}
+      </select>
+    </div>
+    <button class="btn btn-dark btn-sm" id="travelBtn">Set Out</button>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Active Quests</div>
+    ${active.length ? active.map(q => questRow(q, true)).join('') : '<div class="inv-empty">No quest binds you yet.</div>'}
+  </div>
+  <div class="panel">
+    <div class="panel-title">Offered Quests</div>
+    ${offered.length ? offered.map(q => questRow(q, false)).join('') : '<div class="inv-empty">No one is offering work. The Goddess may have plans for you.</div>'}
+  </div>
+  ${done.length ? `<div class="panel"><div class="panel-title">Deeds Done</div>${done.map(q => `<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:14px;color:var(--text-dim)">✓ ${esc(q.title)}</div>`).join('')}</div>` : ''}`;
+}
+
+function wireQuests() {
+  const travel = $('#travelBtn');
+  if (travel) travel.onclick = () => {
+    const chars = getChars();
+    const c = chars[session];
+    const dest = locById($('#travelSel').value);
+    if (!dest || c.loc === dest.id) return;
+    c.loc = dest.id;
+    chars[session] = c;
+    saveChars(chars);
+    saveStory([...getStory(), {
+      id: uid(), type: 'system', author: 'The Veil',
+      text: `${c.name} sets out and arrives at ${dest.name}.`,
+      t: Date.now()
+    }]);
+    toast(`You travel to ${dest.name}.`);
+    renderGame();
+  };
+
+  document.querySelectorAll('[data-accept-quest]').forEach(b => b.onclick = () => {
+    const chars = getChars();
+    const c = chars[session];
+    const q = getQuests().find(x => x.id === b.dataset.acceptQuest);
+    if (!q || c.quests.active.includes(q.id)) return;
+    c.quests.active.push(q.id);
+    chars[session] = c;
+    saveChars(chars);
+    toast(`Quest accepted: ${q.title}.`);
+    renderGame();
+  });
+
+  document.querySelectorAll('[data-complete-quest]').forEach(b => b.onclick = () => {
+    const chars = getChars();
+    const c = chars[session];
+    const q = getQuests().find(x => x.id === b.dataset.completeQuest);
+    if (!q || c.loc !== q.loc) return;
+    c.quests.active = c.quests.active.filter(id => id !== q.id);
+    c.quests.done.push(q.id);
+    c.gold += q.gold;
+    if (q.item) c.inventory.push({ id: uid(), key: q.item, plus: 0, enchant: null });
+    grantXP(c, q.xp);
+    chars[session] = c;
+    saveChars(chars);
+    saveStory([...getStory(), {
+      id: uid(), type: q.divine ? 'goddess' : 'system',
+      author: q.divine ? 'The Goddess' : 'The Veil',
+      text: q.divine
+        ? `${c.name} has fulfilled the divine quest "${q.title}". The Goddess is watching, and is not displeased.`
+        : `${c.name} completes "${q.title}" (+${q.xp} XP, +${q.gold} gold${q.item ? ', ' + q.item : ''}).`,
+      t: Date.now()
+    }]);
+    toast(`Quest complete: ${q.title}! +${q.xp} XP, +${q.gold} gold${q.item ? ', ' + q.item : ''}.`);
     renderGame();
   });
 }
@@ -1338,10 +1616,72 @@ function adminHTML() {
     </div>
 
     <div class="panel">
+      <div class="panel-title purple">☽ Weave a Quest</div>
+      <div class="field"><label>Quest Title</label><input id="fqTitle" maxlength="50" placeholder="e.g. The Bell Below Hollowdeep"></div>
+      <div class="field"><label>Quest Text</label><textarea id="fqDesc" style="min-height:60px" placeholder="What must be done?"></textarea></div>
+      <div class="effect-row">
+        <div class="field"><label>Giver</label><input id="fqGiver" maxlength="30" placeholder="NPC name, or leave blank for divine"></div>
+        <div class="field"><label>Location</label>
+          <select id="fqLoc">${LOCATIONS.map(l => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="effect-row">
+        <div class="field"><label>XP Reward</label><input id="fqXp" type="number" min="0" max="99999" value="80"></div>
+        <div class="field"><label>Gold Reward</label><input id="fqGold" type="number" min="0" max="99999" value="50"></div>
+      </div>
+      <div class="effect-row">
+        <div class="field"><label>Item Reward</label>
+          <select id="fqItem"><option value="">None</option>${Object.keys(ITEM_POOL).filter(k => ITEM_POOL[k].type !== 'material').map(k => `<option>${esc(k)}</option>`).join('')}</select></div>
+        <div class="field"><label>Offer To</label>
+          <select id="fqTarget"><option value="">All souls</option>
+            ${names.map(([u, c]) => `<option value="${esc(u)}">${esc(c.name)} only</option>`).join('')}
+          </select></div>
+      </div>
+      <button class="btn btn-purple" id="fqWeave">Weave Quest</button>
+      <div id="fqList" style="margin-top:18px">
+        ${(() => {
+          const qs = getQuests();
+          if (!qs.length) return '<div class="inv-empty">No quests woven yet.</div>';
+          return qs.map(q => `
+            <div class="player-row">
+              <div>
+                <div style="font-family:'Cinzel',serif;color:var(--gold)">${q.divine ? '☽ ' : ''}${esc(q.title)}
+                  <span style="font-size:11px;color:var(--text-dim)"> · ${q.xp} XP / ${q.gold}g · ${esc(locById(q.loc)?.name || '?')}</span>
+                </div>
+                <div style="font-size:13px;color:var(--text-dim)">${esc(q.desc)}</div>
+                <div style="font-size:12px;color:var(--text-dim)">${q.divine ? 'DIVINE QUEST' : 'from ' + esc(q.giver || 'a stranger')} — offered to ${q.targets === null ? 'all souls' : esc(q.targets.map(u => chars[u]?.name || u).join(', '))}</div>
+              </div>
+              <button class="btn btn-danger btn-sm" data-unweave="${q.id}">Unweave</button>
+            </div>`).join('');
+        })()}
+      </div>
+    </div>
+
+    <div class="panel" style="border-color:var(--blood)">
+      <div class="panel-title" style="color:var(--bad)">☽ Souls at the Threshold</div>
+      ${(() => {
+        const fallen = Object.entries(chars).filter(([u, c]) => c.dead);
+        if (!fallen.length) return '<div class="inv-empty">No soul waits at the threshold.</div>';
+        return fallen.map(([u, c]) => `
+          <div class="player-row" style="border-color:var(--blood)">
+            <div>
+              <div style="font-family:'Cinzel',serif;color:var(--bad)">☠ ${esc(c.name)}</div>
+              <div style="font-size:13px;color:var(--text-dim)">offers: ${c.offering ? esc(c.offering.desc) : 'nothing yet'}</div>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-sm" data-revive="${esc(u)}">Accept & Revive</button>
+              <button class="btn btn-danger btn-sm" data-damn="${esc(u)}">Refuse — Unmake</button>
+            </div>
+          </div>`).join('');
+      })()}
+    </div>
+
+    <div class="panel">
       <div class="panel-title" style="color:var(--bad)">☽ The Great Reset</div>
       <p style="font-size:14px;color:var(--text-dim);margin-bottom:12px">
-        Unmake the world entirely: every account, every soul, every item, every forged skill and horror,
+        Unmake the world entirely: every mortal account, every soul, every item, every forged skill and horror,
         every page of the Chronicle — gone. The Veil is born again, empty. This cannot be undone.
+        <span style="color:var(--purple)">The Goddess alone persists — she was before the world, and remains after it.</span>
+        Her mortal incarnation, being of the world, is unmade with it and may be reforged.
       </p>
       <button class="btn btn-danger" id="greatReset">Unmake the World</button>
     </div>
@@ -1597,13 +1937,112 @@ function wireAdmin() {
   // ---- The Great Reset ----
   const reset = $('#greatReset');
   if (reset) reset.onclick = () => {
-    if (!confirm('Unmake the ENTIRE world? Every account, soul, item, forged skill, monster and chronicle page will cease to exist. This cannot be undone.')) return;
+    if (!confirm('Unmake the ENTIRE world? Every mortal account, soul, item, forged skill, monster and chronicle page will cease to exist. The Goddess persists. This cannot be undone.')) return;
     if (!confirm('Final word: every player loses everything. The Veil is born again, empty. Proceed?')) return;
+    // The Goddess was before the world and remains after it.
+    const users = getUsers();
+    const goddesses = Object.fromEntries(Object.entries(users).filter(([u, r]) => r.role === 'goddess'));
+    const wasGoddess = session && users[session]?.role === 'goddess';
     Object.keys(localStorage).filter(k => k.startsWith('sv_')).forEach(k => localStorage.removeItem(k));
-    session = null;
-    toast('☽ The world is unmade. Only the Veil remains.', 'purple');
-    renderAuth();
+    if (Object.keys(goddesses).length) {
+      saveUsers(goddesses);
+      if (wasGoddess) { session = Object.keys(goddesses).find(u => u === session) || Object.keys(goddesses)[0]; }
+      else { session = Object.keys(goddesses)[0]; }
+      DB.set('session', session);
+      saveStory([{
+        id: uid(), type: 'goddess', author: 'The Goddess',
+        text: 'The world is unmade. Its pages burn to white ash, its souls scatter like startled birds. But I remain — I was before the world, and I remain after it. When I am ready, I will breathe a new one.',
+        t: Date.now()
+      }]);
+      toast('☽ The world is unmade — but you remain, Goddess.', 'purple');
+      renderGame();
+    } else {
+      session = null;
+      toast('☽ The world is unmade. Only the Veil remains.', 'purple');
+      renderAuth();
+    }
   };
+
+  // ---- Quest weaver ----
+  const weave = $('#fqWeave');
+  if (weave) {
+    weave.onclick = () => {
+      const title = $('#fqTitle').value.trim();
+      const desc = $('#fqDesc').value.trim();
+      if (!title || !desc) return toast('A quest needs both a title and a description.', 'red');
+      const giver = $('#fqGiver').value.trim();
+      const target = $('#fqTarget').value || null;
+      saveQuests([...getQuests(), {
+        id: uid(), title, desc,
+        giver: giver || null,
+        divine: !giver,
+        loc: $('#fqLoc').value,
+        xp: Math.max(0, parseInt($('#fqXp').value) || 0),
+        gold: Math.max(0, parseInt($('#fqGold').value) || 0),
+        item: $('#fqItem').value || null,
+        targets: target ? [target] : null,
+        t: Date.now()
+      }]);
+      saveStory([...getStory(), {
+        id: uid(), type: giver ? 'system' : 'goddess',
+        author: giver ? 'The Veil' : 'The Goddess',
+        text: giver
+          ? `${giver} spreads word of a task: "${title}".`
+          : `A divine quest is laid upon the world: "${title}".`,
+        t: Date.now()
+      }]);
+      toast(`Quest woven: ${title}.`, 'purple');
+      renderGame();
+    };
+
+    document.querySelectorAll('[data-unweave]').forEach(b => b.onclick = () => {
+      if (!confirm('Unweave this quest? Souls who accepted it will simply lose it.')) return;
+      saveQuests(getQuests().filter(q => q.id !== b.dataset.unweave));
+      renderGame();
+    });
+
+    // ---- Souls at the threshold ----
+    document.querySelectorAll('[data-revive]').forEach(b => b.onclick = () => {
+      const chars = getChars();
+      const c = chars[b.dataset.revive];
+      if (!c?.dead) return;
+      if (!confirm(`Accept ${c.name}'s offering (${c.offering?.desc || 'nothing'}) and breathe them back to life?`)) return;
+      // Take the offering.
+      if (c.offering?.type === 'gold') c.gold = Math.max(0, c.gold - c.offering.amount);
+      if (c.offering?.type === 'skill') c.skills = c.skills.filter(k => k !== c.offering.skill);
+      if (c.offering?.type === 'treasure') c.inventory = c.inventory.filter(i => i.id !== c.offering.itemId);
+      c.dead = false;
+      c.offering = null;
+      c.hp = Math.floor(charMaxHp(c) * 0.5);
+      c.mp = Math.floor(charMaxMp(c) * 0.5);
+      chars[b.dataset.revive] = c;
+      saveChars(chars);
+      saveStory([...getStory(), {
+        id: uid(), type: 'goddess', author: 'The Goddess',
+        text: `The Goddess finds ${c.name}'s offering pleasing. Breath returns to their lungs; the threshold releases them. They will remember kneeling there.`,
+        t: Date.now()
+      }]);
+      toast(`☀ ${c.name} is revived. The offering is taken.`, 'purple');
+      renderGame();
+    });
+
+    document.querySelectorAll('[data-damn]').forEach(b => b.onclick = () => {
+      const chars = getChars();
+      const c = chars[b.dataset.damn];
+      if (!c?.dead) return;
+      if (!confirm(`Refuse ${c.name}'s offering and UNMAKE them? Their soul is destroyed — that player must forge a new character. This cannot be undone.`)) return;
+      const name = c.name;
+      delete chars[b.dataset.damn];
+      saveChars(chars);
+      saveStory([...getStory(), {
+        id: uid(), type: 'goddess', author: 'The Goddess',
+        text: `The Goddess looks upon ${name}'s offering and is not pleased. The threshold closes. The soul of ${name} is unmade — its name scraped from the world like a stain.`,
+        t: Date.now()
+      }]);
+      toast(`☠ ${name} has been unmade.`, 'purple');
+      renderGame();
+    });
+  }
 
   document.querySelectorAll('[data-quick]').forEach(b => b.onclick = () => {
     const [kind, user] = b.dataset.quick.split(':');
